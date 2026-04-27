@@ -1,0 +1,8 @@
+trial_num,stimulus,prev_stimulus,is_target,response,response_key,correct,rt,timestamp
+1,0,N/A,False,N/A,N/A,True,,2026-04-22T19:23:17.281826
+2,4,0,False,False,right,True,906,2026-04-22T19:23:19.847854
+3,7,4,False,False,right,True,616,2026-04-22T19:23:22.382111
+4,7,7,True,N/A,N/A,False,,2026-04-22T19:23:25.220206
+5,9,7,False,N/A,N/A,False,,2026-04-22T19:23:27.990102
+6,1,9,False,N/A,N/A,False,,2026-04-22T19:23:30.747922
+7,2,1,False,N/A,N/A,False,,2026-04-22T19:23:33.560960
