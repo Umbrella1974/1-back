@@ -39,6 +39,8 @@ HAPTIC_EVENT_FIELDS = [
     "digit_onset_delta_ms",
     "onset_was_delayed",
     "sync_warning",
+    "sampled_delay_ms",
+    "sampled_gap_ms",
     "note",
 ]
 
@@ -96,6 +98,8 @@ class HapticEventRecord:
     digit_onset_delta_ms: float | None = None
     onset_was_delayed: bool = False
     sync_warning: str = ""
+    sampled_delay_ms: int | None = None
+    sampled_gap_ms: int | None = None
     note: str = ""
 
     def to_csv_row(self) -> dict[str, Any]:
@@ -138,6 +142,45 @@ class SimpleHapticSender:
 
     def send_off(self, **kwargs: Any) -> HapticEventRecord:
         return self._record_event("off", "none", **kwargs)
+
+    def record_scheduled_event(self, scheduled: Any) -> HapticEventRecord:
+        """Record one ScheduledHapticEvent-like object in disabled sender format."""
+
+        event_name = str(getattr(scheduled, "event_name"))
+        modality_by_name = {
+            "contact": "vibration",
+            "release": "vibration",
+            "slip": "vibration",
+            "left": "matrix",
+            "right": "matrix",
+        }
+        if event_name not in modality_by_name:
+            raise ValueError(f"unsupported scheduled haptic event: {event_name}")
+        return self._record_event(
+            event_name,
+            modality_by_name[event_name],
+            haptic_trial_index=getattr(scheduled, "haptic_trial_index"),
+            event_index=getattr(scheduled, "event_index"),
+            command_label=getattr(scheduled, "command_label", None),
+            command_id=getattr(scheduled, "command_id", None),
+            channel_list=list(getattr(scheduled, "channel_list", ()) or ()),
+            duration_ms=getattr(scheduled, "duration_ms", None),
+            trigger_zone=getattr(scheduled, "trigger_zone", None),
+            trigger_pinch_distance=getattr(scheduled, "trigger_pinch_distance", None),
+            trigger_frame_index=getattr(scheduled, "trigger_frame_index", None),
+            original_planned_onset_ms=getattr(
+                scheduled,
+                "original_planned_onset_ms",
+                None,
+            ),
+            adjusted_onset_ms=getattr(scheduled, "adjusted_onset_ms", None),
+            nearest_digit_onset_ms=getattr(scheduled, "nearest_digit_onset_ms", None),
+            digit_onset_delta_ms=getattr(scheduled, "digit_onset_delta_ms", None),
+            onset_was_delayed=getattr(scheduled, "onset_was_delayed", False),
+            sync_warning=getattr(scheduled, "sync_warning", ""),
+            sampled_delay_ms=getattr(scheduled, "sampled_delay_ms", None),
+            sampled_gap_ms=getattr(scheduled, "sampled_gap_ms", None),
+        )
 
     def record_plan_event(self, event: Any, **kwargs: Any) -> HapticEventRecord:
         """Record a parsed HapticPlanEvent-like object."""
@@ -184,6 +227,8 @@ class SimpleHapticSender:
         digit_onset_delta_ms: float | None = None,
         onset_was_delayed: bool = False,
         sync_warning: str = "",
+        sampled_delay_ms: int | None = None,
+        sampled_gap_ms: int | None = None,
         note: str = "",
     ) -> HapticEventRecord:
         index = len(self.records) if event_index is None else int(event_index)
@@ -237,6 +282,8 @@ class SimpleHapticSender:
             digit_onset_delta_ms=digit_onset_delta_ms,
             onset_was_delayed=bool(onset_was_delayed),
             sync_warning=sync_warning,
+            sampled_delay_ms=int(sampled_delay_ms) if sampled_delay_ms is not None else None,
+            sampled_gap_ms=int(sampled_gap_ms) if sampled_gap_ms is not None else None,
             note=";".join(notes),
         )
         self.records.append(record)
@@ -252,4 +299,3 @@ def _validate_channel_list(channels: list[int] | tuple[int, ...]) -> list[int]:
             raise ValueError("matrix channel must be in 0..127.")
         result.append(int(channel))
     return result
-
