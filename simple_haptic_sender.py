@@ -147,23 +147,11 @@ class SimpleHapticSender:
         """Record one ScheduledHapticEvent-like object in disabled sender format."""
 
         event_name = str(getattr(scheduled, "event_name"))
-        modality_by_name = {
-            "contact": "vibration",
-            "release": "vibration",
-            "slip": "vibration",
-            "left": "matrix",
-            "right": "matrix",
-        }
-        if event_name not in modality_by_name:
-            raise ValueError(f"unsupported scheduled haptic event: {event_name}")
-        return self._record_event(
-            event_name,
-            modality_by_name[event_name],
+        kwargs = dict(
             haptic_trial_index=getattr(scheduled, "haptic_trial_index"),
             event_index=getattr(scheduled, "event_index"),
             command_label=getattr(scheduled, "command_label", None),
             command_id=getattr(scheduled, "command_id", None),
-            channel_list=list(getattr(scheduled, "channel_list", ()) or ()),
             duration_ms=getattr(scheduled, "duration_ms", None),
             trigger_zone=getattr(scheduled, "trigger_zone", None),
             trigger_pinch_distance=getattr(scheduled, "trigger_pinch_distance", None),
@@ -181,6 +169,23 @@ class SimpleHapticSender:
             sampled_delay_ms=getattr(scheduled, "sampled_delay_ms", None),
             sampled_gap_ms=getattr(scheduled, "sampled_gap_ms", None),
         )
+        if event_name == "contact":
+            return self.send_contact(**kwargs)
+        if event_name == "release":
+            return self.send_release(**kwargs)
+        if event_name == "slip":
+            return self.send_slip(**kwargs)
+        if event_name == "left":
+            return self.send_matrix_left(
+                list(getattr(scheduled, "channel_list", ()) or ()),
+                **kwargs,
+            )
+        if event_name == "right":
+            return self.send_matrix_right(
+                list(getattr(scheduled, "channel_list", ()) or ()),
+                **kwargs,
+            )
+        raise ValueError(f"unsupported scheduled haptic event: {event_name}")
 
     def record_plan_event(self, event: Any, **kwargs: Any) -> HapticEventRecord:
         """Record a parsed HapticPlanEvent-like object."""

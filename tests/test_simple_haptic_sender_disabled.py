@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+from types import SimpleNamespace
 
+import pytest
 from haptic_plan_config import haptic_plan_config_from_dict
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
 
@@ -105,3 +107,71 @@ def test_disabled_sender_writes_haptic_events_csv(tmp_path) -> None:
     assert rows[0]["event_name"] == "right"
     assert rows[0]["channel_list"] == "[5,6,7]"
     assert rows[0]["visual_text_cue_enabled"] == "True"
+
+
+@pytest.mark.parametrize(
+    ("event_name", "expected_sender"),
+    [
+        ("contact", "send_contact"),
+        ("release", "send_release"),
+        ("slip", "send_slip"),
+        ("left", "send_matrix_left"),
+        ("right", "send_matrix_right"),
+    ],
+)
+def test_record_scheduled_event_dispatches_to_public_send_methods(
+    event_name: str,
+    expected_sender: str,
+) -> None:
+    class TrackingSender(SimpleHapticSender):
+        def __init__(self) -> None:
+            super().__init__(session_id="session-dispatch")
+            self.called_sender = ""
+
+        def send_contact(self, **kwargs):
+            self.called_sender = "send_contact"
+            return super().send_contact(**kwargs)
+
+        def send_release(self, **kwargs):
+            self.called_sender = "send_release"
+            return super().send_release(**kwargs)
+
+        def send_slip(self, **kwargs):
+            self.called_sender = "send_slip"
+            return super().send_slip(**kwargs)
+
+        def send_matrix_left(self, channel_list, **kwargs):
+            self.called_sender = "send_matrix_left"
+            return super().send_matrix_left(channel_list, **kwargs)
+
+        def send_matrix_right(self, channel_list, **kwargs):
+            self.called_sender = "send_matrix_right"
+            return super().send_matrix_right(channel_list, **kwargs)
+
+    scheduled = SimpleNamespace(
+        haptic_trial_index=0,
+        event_index=0,
+        event_name=event_name,
+        modality="matrix" if event_name in {"left", "right"} else "vibration",
+        command_label="contact_enter" if event_name == "contact" else None,
+        command_id=1 if event_name == "contact" else None,
+        channel_list=(1, 2, 3),
+        duration_ms=150,
+        trigger_zone="open_zone",
+        trigger_pinch_distance=0.08,
+        trigger_frame_index=1,
+        original_planned_onset_ms=1000.0,
+        adjusted_onset_ms=1000.0,
+        nearest_digit_onset_ms=None,
+        digit_onset_delta_ms=None,
+        onset_was_delayed=False,
+        sync_warning="",
+        sampled_delay_ms=10 if event_name == "contact" else None,
+        sampled_gap_ms=None if event_name == "contact" else 20,
+    )
+    sender = TrackingSender()
+
+    record = sender.record_scheduled_event(scheduled)
+
+    assert sender.called_sender == expected_sender
+    assert record.event_name == event_name
