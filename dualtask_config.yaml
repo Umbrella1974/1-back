@@ -1,0 +1,34 @@
+session:
+  session_id_prefix: pinch_haptic_dry_run
+  output_root: outputs
+  participant_id: ""
+  condition_id: ""
+  duration_s: 60
+  haptic_plan_config: haptic_plan_config_example.yaml
+
+manus:
+  tcp_host: 127.0.0.1
+  tcp_port: 9999
+  require_tracker: false
+  save_raw_frames: true
+
+pinch:
+  thumb_node_id: 4
+  target_finger_node_id: 14
+
+calibration:
+  open_hand_duration_s: 3.0
+  pinch_hand_duration_s: 3.0
+  threshold_ratio: 0.65
+  min_valid_frames: 30
+
+haptic:
+  vibration_enabled: false
+  matrix_enabled: false
+  visual_text_cue_enabled: false
+
+sync:
+  avoid_haptic_on_digit_onset: false
+  digit_onset_guard_ms: 150
+  max_haptic_delay_ms: 500
+  if_cannot_avoid: log_warning_and_send
