@@ -13,6 +13,11 @@ def _valid_plan() -> dict:
         "plan_id": "plan_001",
         "description": "phase one validation plan",
         "random_seed": 123,
+        "timing": {
+            "contact_onset_delay_ms": [500, 2000],
+            "inter_event_gap_ms": [300, 1000],
+            "refractory_ms": 3000,
+        },
         "events": [
             {
                 "name": "contact",
@@ -21,6 +26,7 @@ def _valid_plan() -> dict:
                 "command_id": 11,
                 "duration_ms": 150,
                 "trigger_zone": "open_zone",
+                "onset_delay_ms": [600, 700],
                 "onset_policy": {"type": "when_enter_zone", "zone": "open_zone"},
             },
             {
@@ -30,6 +36,7 @@ def _valid_plan() -> dict:
                 "command_id": 33,
                 "duration_ms": 800,
                 "trigger_zone": "closed_zone",
+                "onset_gap_after_previous_ms": [350, 450],
                 "onset_policy": {
                     "type": "after_zone_transition",
                     "from_zone": "open_zone",
@@ -73,9 +80,14 @@ def test_valid_plan_preserves_commands_and_matrix_channels() -> None:
     plan = haptic_plan_config_from_dict(_valid_plan())
 
     assert plan.plan_id == "plan_001"
+    assert plan.timing.contact_onset_delay_ms == (500, 2000)
+    assert plan.timing.inter_event_gap_ms == (300, 1000)
+    assert plan.timing.refractory_ms == 3000
     assert plan.events[0].name == "contact"
     assert plan.events[0].command_id == 11
+    assert plan.events[0].onset_delay_ms == (600, 700)
     assert plan.events[1].command_id == 33
+    assert plan.events[1].onset_gap_after_previous_ms == (350, 450)
     assert plan.events[2].name == "left"
     assert plan.events[2].channel_list == (9, 8, 7)
     assert plan.events[-1].command_label == "contact_exit"
@@ -90,6 +102,19 @@ def test_loads_yaml_plan(tmp_path) -> None:
 
     assert plan.random_seed == 123
     assert plan.zones["open_zone"].lower == "auto_a"
+
+
+def test_repository_example_yaml_loads() -> None:
+    plan = load_haptic_plan_config("haptic_plan_config_example.yaml")
+
+    assert plan.timing.refractory_ms == 3000
+    assert [event.name for event in plan.events] == [
+        "contact",
+        "slip",
+        "left",
+        "right",
+        "release",
+    ]
 
 
 def test_first_event_must_be_contact() -> None:
@@ -123,6 +148,55 @@ def test_vibration_event_requires_plan_command_not_hardcoded_default() -> None:
 
     with pytest.raises(ValueError, match="requires command_label or command_id"):
         haptic_plan_config_from_dict(payload)
+
+
+def test_timing_is_required() -> None:
+    payload = _valid_plan()
+    payload.pop("timing")
+
+    with pytest.raises(ValueError, match="timing is required"):
+        haptic_plan_config_from_dict(payload)
+
+
+def test_invalid_timing_range_is_rejected() -> None:
+    payload = _valid_plan()
+    payload["timing"]["contact_onset_delay_ms"] = [200, 100]
+
+    with pytest.raises(ValueError, match=r"contact_onset_delay_ms.*<=.*"):
+        haptic_plan_config_from_dict(payload)
+
+    payload = _valid_plan()
+    payload["timing"]["inter_event_gap_ms"] = [0, -1]
+
+    with pytest.raises(ValueError, match="non-negative"):
+        haptic_plan_config_from_dict(payload)
+
+    payload = _valid_plan()
+    payload["timing"]["inter_event_gap_ms"] = [100]
+
+    with pytest.raises(ValueError, match="two-item"):
+        haptic_plan_config_from_dict(payload)
+
+
+def test_invalid_event_range_is_rejected() -> None:
+    payload = _valid_plan()
+    payload["events"][0]["onset_delay_ms"] = [700, 600]
+
+    with pytest.raises(ValueError, match=r"onset_delay_ms.*<=.*"):
+        haptic_plan_config_from_dict(payload)
+
+    payload = _valid_plan()
+    payload["events"][1]["onset_gap_after_previous_ms"] = ["bad", 600]
+
+    with pytest.raises(ValueError, match="integer"):
+        haptic_plan_config_from_dict(payload)
+
+
+def test_to_dict_round_trips_timing_and_event_ranges() -> None:
+    first = haptic_plan_config_from_dict(_valid_plan())
+    second = haptic_plan_config_from_dict(first.to_dict())
+
+    assert second.to_dict() == first.to_dict()
 
 
 def test_scheduler_timing_schema_can_omit_onset_policy() -> None:

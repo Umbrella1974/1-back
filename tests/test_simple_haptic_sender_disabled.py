@@ -41,6 +41,11 @@ def test_disabled_sender_records_matrix_channels_from_plan() -> None:
         {
             "plan_id": "p",
             "description": "",
+            "timing": {
+                "contact_onset_delay_ms": [0, 0],
+                "inter_event_gap_ms": [0, 0],
+                "refractory_ms": 0,
+            },
             "events": [
                 {
                     "name": "contact",
@@ -100,4 +105,3 @@ def test_disabled_sender_writes_haptic_events_csv(tmp_path) -> None:
     assert rows[0]["event_name"] == "right"
     assert rows[0]["channel_list"] == "[5,6,7]"
     assert rows[0]["visual_text_cue_enabled"] == "True"
-

@@ -119,7 +119,9 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
     random_seed = payload.get("random_seed")
     if random_seed is not None:
         random_seed = _int_value(random_seed, "random_seed")
-    timing = _parse_timing(payload.get("timing", {}))
+    if "timing" not in payload:
+        raise ValueError("timing is required.")
+    timing = _parse_timing(payload.get("timing"))
     zones = _parse_zones(payload.get("zones"))
     events = _parse_events(payload.get("events"), zones)
     _validate_event_order(events)
