@@ -23,11 +23,28 @@ from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
 from vendor_exp2_abc.live_raw_stream import LiveRawFrame, LiveRawStreamServer
 
 
+DEFAULT_MANUS_TCP_HOST = "127.0.0.1"
+DEFAULT_MANUS_TCP_PORT = 8888
+MANUS_CLIENT_WAIT_TIMEOUT_S = 5.0
+MANUS_CLIENT_HINTS = (
+    "1. 确认 SDKMinimalClient_Windows 是在本程序启动后运行的；",
+    "2. 确认端口是 8888；",
+    "3. 确认没有 capture_raw_jsonl.py 或其他程序占用 8888；",
+    "4. 如果 C++ 之前连接失败，需要重启 C++。",
+)
+
+
 @dataclass(frozen=True)
 class DryRunCoreResult:
     total_pinch_samples: int
     total_valid_pinch_samples: int
     total_haptic_events: int
+
+
+@dataclass
+class ManusTcpLogState:
+    client_connected_logged: bool = False
+    first_frame_logged: bool = False
 
 
 def load_dualtask_config(path: str | Path) -> dict[str, Any]:
@@ -124,15 +141,19 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
     warnings: list[str] = []
     errors: list[str] = []
     start_wall = _now_iso()
-    server = LiveRawStreamServer(
-        host=str(manus_config.get("tcp_host", "127.0.0.1")),
-        port=int(manus_config.get("tcp_port", 9999)),
-    )
+    server = _make_manus_tcp_server(manus_config)
+    manus_tcp_log_state = ManusTcpLogState()
     try:
         print(f"Session: {session_id}")
         print(f"Output: {logger.session_dir}")
         server.start()
+        _log_manus_listening(server)
         print("Waiting for manus_vive_com combined JSON TCP client...")
+        _wait_for_manus_client(
+            server,
+            timeout_s=MANUS_CLIENT_WAIT_TIMEOUT_S,
+            log_state=manus_tcp_log_state,
+        )
 
         input("Open hand calibration: press Enter, then keep hand open...")
         open_samples = _collect_live_samples(
@@ -142,6 +163,7 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
             session_id=session_id,
             duration_s=calibration_config.open_hand_duration_s,
             save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+            tcp_log_state=manus_tcp_log_state,
         )
         input("Pinch calibration: press Enter, then pinch thumb and target finger...")
         pinch_samples = _collect_live_samples(
@@ -151,6 +173,7 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
             session_id=session_id,
             duration_s=calibration_config.pinch_hand_duration_s,
             save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+            tcp_log_state=manus_tcp_log_state,
         )
         calibration = calibrate_from_samples(
             open_samples,
@@ -174,6 +197,7 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
             session_id=session_id,
             duration_s=float(session_config.get("duration_s", 60)),
             save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+            tcp_log_state=manus_tcp_log_state,
         )
         total_haptic_events = result.total_haptic_events
     except Exception as exc:
@@ -270,12 +294,13 @@ def _run_live_formal_phase(
     session_id: str,
     duration_s: float,
     save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None = None,
 ) -> DryRunCoreResult:
     scheduler = HapticTrialScheduler(plan, scheduler_config)
     deadline = time.monotonic() + float(duration_s)
     total_haptic_events = 0
     while time.monotonic() < deadline:
-        frame = server.get_frame(timeout=0.1)
+        frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
         if frame is None:
             continue
         raw = _raw_from_live_frame(frame)
@@ -306,11 +331,12 @@ def _collect_live_samples(
     session_id: str,
     duration_s: float,
     save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None = None,
 ) -> list[PinchInputSample]:
     deadline = time.monotonic() + float(duration_s)
     samples: list[PinchInputSample] = []
     while time.monotonic() < deadline:
-        frame = server.get_frame(timeout=0.1)
+        frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
         if frame is None:
             continue
         raw = _raw_from_live_frame(frame)
@@ -318,6 +344,79 @@ def _collect_live_samples(
             logger.write_raw_frame(raw)
         samples.append(parser.parse_sample(frame, session_id=session_id))
     return samples
+
+
+def _make_manus_tcp_server(manus_config: dict[str, Any]) -> LiveRawStreamServer:
+    """Create the MANUS newline-JSON TCP server used by the dry-run."""
+
+    return LiveRawStreamServer(
+        host=str(manus_config.get("tcp_host", DEFAULT_MANUS_TCP_HOST)),
+        port=int(manus_config.get("tcp_port", DEFAULT_MANUS_TCP_PORT)),
+    )
+
+
+def _log_manus_listening(
+    server: LiveRawStreamServer,
+    *,
+    print_fn: Any = print,
+) -> None:
+    print_fn(f"[MANUS TCP] listening on {server.host}:{server.port}")
+
+
+def _wait_for_manus_client(
+    server: LiveRawStreamServer,
+    *,
+    timeout_s: float = MANUS_CLIENT_WAIT_TIMEOUT_S,
+    log_state: ManusTcpLogState | None = None,
+    print_fn: Any = print,
+    poll_s: float = 0.05,
+) -> bool:
+    """Wait briefly for the C++ TCP client and print operator-facing hints."""
+
+    state = log_state or ManusTcpLogState()
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while time.monotonic() < deadline:
+        if _log_manus_client_connected_if_needed(server, state, print_fn=print_fn):
+            return True
+        time.sleep(max(0.001, float(poll_s)))
+    if _log_manus_client_connected_if_needed(server, state, print_fn=print_fn):
+        return True
+    print_fn("[MANUS TCP] no client connected after 5 seconds.")
+    for hint in MANUS_CLIENT_HINTS:
+        print_fn(f"[MANUS TCP] {hint}")
+    return False
+
+
+def _get_manus_frame(
+    server: LiveRawStreamServer,
+    *,
+    timeout: float | None = 0.1,
+    log_state: ManusTcpLogState | None = None,
+    print_fn: Any = print,
+) -> LiveRawFrame | None:
+    """Read one frame while emitting connection and first-frame diagnostics."""
+
+    state = log_state or ManusTcpLogState()
+    _log_manus_client_connected_if_needed(server, state, print_fn=print_fn)
+    frame = server.get_frame(timeout=timeout)
+    _log_manus_client_connected_if_needed(server, state, print_fn=print_fn)
+    if frame is not None and not state.first_frame_logged:
+        print_fn("[MANUS TCP] first frame received")
+        state.first_frame_logged = True
+    return frame
+
+
+def _log_manus_client_connected_if_needed(
+    server: LiveRawStreamServer,
+    log_state: ManusTcpLogState,
+    *,
+    print_fn: Any = print,
+) -> bool:
+    connected = bool(server.stats_snapshot().client_connected)
+    if connected and not log_state.client_connected_logged:
+        print_fn("[MANUS TCP] client connected")
+        log_state.client_connected_logged = True
+    return connected
 
 
 def _raw_from_live_frame(frame: LiveRawFrame | Any) -> Any:

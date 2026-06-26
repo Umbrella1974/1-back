@@ -8,7 +8,7 @@ session:
 
 manus:
   tcp_host: 127.0.0.1
-  tcp_port: 9999
+  tcp_port: 8888
   require_tracker: false
   save_raw_frames: true
 
