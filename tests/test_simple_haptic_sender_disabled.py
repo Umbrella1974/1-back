@@ -22,6 +22,7 @@ def test_disabled_sender_records_vibration_without_tcp() -> None:
         command_id=10,
         duration_ms=150,
         trigger_zone="open_zone",
+        actual_zone_at_emit="open_zone",
         trigger_pinch_distance=0.08,
         trigger_frame_index=12,
     )
@@ -29,6 +30,7 @@ def test_disabled_sender_records_vibration_without_tcp() -> None:
     assert record.session_id == "session-a"
     assert record.event_name == "contact"
     assert record.command_id == 10
+    assert record.actual_zone_at_emit == "open_zone"
     assert record.vibration_enabled is False
     assert record.tcp_enabled is False
     assert record.tcp_queued is False
@@ -158,6 +160,7 @@ def test_record_scheduled_event_dispatches_to_public_send_methods(
         channel_list=(1, 2, 3),
         duration_ms=150,
         trigger_zone="open_zone",
+        actual_zone_at_emit="open_zone",
         trigger_pinch_distance=0.08,
         trigger_frame_index=1,
         original_planned_onset_ms=1000.0,
@@ -175,3 +178,4 @@ def test_record_scheduled_event_dispatches_to_public_send_methods(
 
     assert sender.called_sender == expected_sender
     assert record.event_name == event_name
+    assert record.actual_zone_at_emit == "open_zone"

@@ -24,6 +24,7 @@ HAPTIC_EVENT_FIELDS = [
     "channel_list",
     "duration_ms",
     "trigger_zone",
+    "actual_zone_at_emit",
     "trigger_pinch_distance",
     "trigger_frame_index",
     "vibration_enabled",
@@ -83,6 +84,7 @@ class HapticEventRecord:
     channel_list: list[int] = field(default_factory=list)
     duration_ms: int | None = None
     trigger_zone: str | None = None
+    actual_zone_at_emit: str | None = None
     trigger_pinch_distance: float | None = None
     trigger_frame_index: int | None = None
     vibration_enabled: bool = False
@@ -154,6 +156,7 @@ class SimpleHapticSender:
             command_id=getattr(scheduled, "command_id", None),
             duration_ms=getattr(scheduled, "duration_ms", None),
             trigger_zone=getattr(scheduled, "trigger_zone", None),
+            actual_zone_at_emit=getattr(scheduled, "actual_zone_at_emit", None),
             trigger_pinch_distance=getattr(scheduled, "trigger_pinch_distance", None),
             trigger_frame_index=getattr(scheduled, "trigger_frame_index", None),
             original_planned_onset_ms=getattr(
@@ -224,6 +227,7 @@ class SimpleHapticSender:
         channel_list: list[int] | tuple[int, ...] | None = None,
         duration_ms: int | None = None,
         trigger_zone: str | None = None,
+        actual_zone_at_emit: str | None = None,
         trigger_pinch_distance: float | None = None,
         trigger_frame_index: int | None = None,
         original_planned_onset_ms: float | None = None,
@@ -266,6 +270,7 @@ class SimpleHapticSender:
             channel_list=_validate_channel_list(channel_list or ()),
             duration_ms=int(duration_ms) if duration_ms is not None else None,
             trigger_zone=trigger_zone,
+            actual_zone_at_emit=actual_zone_at_emit,
             trigger_pinch_distance=(
                 float(trigger_pinch_distance)
                 if trigger_pinch_distance is not None

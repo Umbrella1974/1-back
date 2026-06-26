@@ -136,7 +136,8 @@ def test_scheduler_events_are_recorded_to_disabled_sender_csv(tmp_path) -> None:
     assert rows[0]["original_planned_onset_ms"] == "1000.0"
     assert rows[0]["adjusted_onset_ms"] == "1150.0"
     assert rows[0]["onset_was_delayed"] == "True"
+    assert rows[0]["actual_zone_at_emit"] == "open_zone"
+    assert all(row["actual_zone_at_emit"] == "closed_zone" for row in rows[1:])
     assert all(row["tcp_enabled"] == "False" for row in rows)
     assert all(row["send_status"] == "disabled" for row in rows)
     assert all(row["session_id"] == "dry-session" for row in rows)
-

@@ -78,6 +78,7 @@ class ScheduledHapticEvent:
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     duration_ms: int = 0
     trigger_zone: str = ""
+    actual_zone_at_emit: str = ""
     trigger_pinch_distance: float | None = None
     trigger_frame_index: int | None = None
     original_planned_onset_ms: float = 0.0
@@ -216,6 +217,7 @@ class HapticTrialScheduler:
                     return events
                 events.append(
                     self._emit_pending(
+                        actual_zone_at_emit=zone,
                         pinch_distance=pinch_distance,
                         frame_index=frame_index,
                     )
@@ -233,6 +235,7 @@ class HapticTrialScheduler:
                 if pending is None or now < pending.adjustment.adjusted_onset_ms:
                     return events
                 emitted = self._emit_pending(
+                    actual_zone_at_emit=zone,
                     pinch_distance=pinch_distance,
                     frame_index=frame_index,
                 )
@@ -312,6 +315,7 @@ class HapticTrialScheduler:
     def _emit_pending(
         self,
         *,
+        actual_zone_at_emit: str,
         pinch_distance: float | None,
         frame_index: int | None,
     ) -> ScheduledHapticEvent:
@@ -330,6 +334,7 @@ class HapticTrialScheduler:
             channel_list=event.channel_list,
             duration_ms=event.duration_ms,
             trigger_zone=event.trigger_zone,
+            actual_zone_at_emit=str(actual_zone_at_emit),
             trigger_pinch_distance=(
                 float(pinch_distance) if pinch_distance is not None else None
             ),
@@ -413,4 +418,3 @@ def _non_negative_float(value: Any, name: str) -> float:
     if result < 0.0:
         raise ValueError(f"{name} must be non-negative.")
     return result
-

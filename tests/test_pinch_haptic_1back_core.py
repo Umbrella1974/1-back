@@ -5,29 +5,73 @@ import sys
 
 from dualtask_logger import DualTaskLogger
 from haptic_plan_config import haptic_plan_config_from_dict
+from haptic_trial_scheduler import HapticTrialSchedulerConfig
 from manus_pinch_input import PinchInputSample
+from nback_dualtask_runner import NBackConfig, NBackTimeline
 from pinch_calibration import PinchCalibrationResult
-from run_pinch_haptic_dry_run import run_pinch_haptic_dry_run_core
-from simple_haptic_sender import SimpleHapticSender
+from run_pinch_haptic_1back import (
+    NBackResponseInput,
+    run_pinch_haptic_1back_core,
+)
+from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
 
 
-def test_dry_run_core_drives_scheduler_and_writes_csv_outputs(tmp_path) -> None:
-    session_id = "dry-core-session"
+def test_1back_core_advances_pinch_haptic_and_nback_outputs(tmp_path) -> None:
+    session_id = "dual-core-session"
     logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
-    sender = SimpleHapticSender(session_id=session_id)
-    result = run_pinch_haptic_dry_run_core(
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=False,
+            matrix_enabled=False,
+            visual_text_cue_enabled=False,
+        ),
+        session_id=session_id,
+    )
+    timeline = NBackTimeline(
+        NBackConfig(
+            num_trials=2,
+            fixation_duration_ms=0,
+            stimulus_duration_ms=100,
+            isi_min_ms=100,
+            isi_max_ms=100,
+            key_same="left",
+            key_different="right",
+        ),
+        sequence=[2, 2],
+        isi_ms=[100, 100],
+        wall_time_fn=lambda: 0.0,
+    )
+
+    result = run_pinch_haptic_1back_core(
         _samples(session_id),
         calibration=_calibration(),
         plan=_plan(),
         logger=logger,
+        nback_timeline=timeline,
         sender=sender,
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        nback_responses=[
+            NBackResponseInput("right", 1030.0),
+            NBackResponseInput("left", 1230.0),
+        ],
+        start_monotonic_ms=1000.0,
+        tick_interval_ms=10.0,
     )
 
-    with logger.paths.haptic_events_csv.open(newline="", encoding="utf-8") as handle:
-        haptic_rows = list(csv.DictReader(handle))
+    with logger.paths.nback_events_csv.open(newline="", encoding="utf-8") as handle:
+        nback_rows = list(csv.DictReader(handle))
     with logger.paths.pinch_timeseries_csv.open(newline="", encoding="utf-8") as handle:
         pinch_rows = list(csv.DictReader(handle))
+    with logger.paths.haptic_events_csv.open(newline="", encoding="utf-8") as handle:
+        haptic_rows = list(csv.DictReader(handle))
 
+    assert logger.paths.nback_events_csv.exists()
+    assert logger.paths.pinch_timeseries_csv.exists()
+    assert logger.paths.haptic_events_csv.exists()
+    assert result.total_nback_trials == 2
+    assert result.total_nback_responses == 2
+    assert result.total_haptic_events == 5
+    assert [row["correct"] for row in nback_rows] == ["True", "True"]
     assert [row["event_name"] for row in haptic_rows] == [
         "contact",
         "slip",
@@ -35,17 +79,12 @@ def test_dry_run_core_drives_scheduler_and_writes_csv_outputs(tmp_path) -> None:
         "right",
         "release",
     ]
-    assert haptic_rows[2]["channel_list"] == "[1,2,3]"
-    assert haptic_rows[3]["channel_list"] == "[5,6,7]"
     assert haptic_rows[0]["actual_zone_at_emit"] == "open_zone"
-    assert all(row["actual_zone_at_emit"] == "closed_zone" for row in haptic_rows[1:])
-    assert all(row["session_id"] == session_id for row in haptic_rows)
+    assert all(row["session_id"] == session_id for row in nback_rows)
     assert all(row["session_id"] == session_id for row in pinch_rows)
+    assert all(row["session_id"] == session_id for row in haptic_rows)
     assert all(row["tcp_enabled"] == "False" for row in haptic_rows)
-    assert all(row["send_status"] == "disabled" for row in haptic_rows)
-    assert result.total_haptic_events == 5
-    assert result.total_pinch_samples == len(pinch_rows)
-    assert result.total_valid_pinch_samples == len(pinch_rows)
+    assert all(row["visual_text_cue_enabled"] == "False" for row in haptic_rows)
     assert "pygame" not in sys.modules
 
 
@@ -67,7 +106,7 @@ def _calibration() -> PinchCalibrationResult:
 def _plan():
     return haptic_plan_config_from_dict(
         {
-            "plan_id": "dry_core_plan",
+            "plan_id": "dual_core_plan",
             "description": "",
             "random_seed": 1,
             "timing": {

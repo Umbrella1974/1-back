@@ -1,5 +1,5 @@
 session:
-  session_id_prefix: pinch_haptic_dry_run
+  session_id_prefix: pinch_haptic_1back
   output_root: outputs
   participant_id: ""
   condition_id: ""
@@ -28,7 +28,7 @@ haptic:
   visual_text_cue_enabled: false
 
 sync:
-  avoid_haptic_on_digit_onset: false
+  avoid_haptic_on_digit_onset: true
   digit_onset_guard_ms: 150
   max_haptic_delay_ms: 500
   if_cannot_avoid: log_warning_and_send

@@ -31,11 +31,26 @@ PINCH_TIMESERIES_FIELDS = [
 ]
 
 
+NBACK_EVENT_FIELDS = [
+    "session_id",
+    "wall_time_iso",
+    "stimulus_index",
+    "stimulus",
+    "is_target",
+    "stimulus_onset_monotonic_ms",
+    "response_key",
+    "response_monotonic_ms",
+    "correct",
+    "rt_ms",
+]
+
+
 @dataclass(frozen=True)
 class DualTaskOutputPaths:
     raw_frames_jsonl: Path
     pinch_timeseries_csv: Path
     haptic_events_csv: Path
+    nback_events_csv: Path
     calibration_json: Path
     summary_json: Path
 
@@ -61,13 +76,17 @@ class DualTaskLogger:
             raw_frames_jsonl=self.session_dir / "raw_frames.jsonl",
             pinch_timeseries_csv=self.session_dir / "pinch_timeseries.csv",
             haptic_events_csv=self.session_dir / "haptic_events.csv",
+            nback_events_csv=self.session_dir / "nback_events.csv",
             calibration_json=self.session_dir / "calibration.json",
             summary_json=self.session_dir / "summary.json",
         )
         self.total_raw_frames = 0
         self.total_pinch_samples = 0
         self.total_valid_pinch_samples = 0
+        self.total_nback_trials = 0
+        self.total_nback_responses = 0
         self._pinch_header_written = False
+        self._nback_header_written = False
 
     def write_raw_frame(self, raw_frame: Any) -> None:
         """Append one raw combined JSON frame."""
@@ -116,6 +135,33 @@ class DualTaskLogger:
         if bool(getattr(sample, "pinch_valid", False)):
             self.total_valid_pinch_samples += 1
 
+    def write_nback_event(self, event: Any) -> None:
+        """Append one 1-back trial event row."""
+
+        row = _record_to_row(event)
+        row.setdefault("session_id", self.session_id)
+        mode = "a" if self._nback_header_written else "w"
+        with self.paths.nback_events_csv.open(mode, newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=NBACK_EVENT_FIELDS)
+            if not self._nback_header_written:
+                writer.writeheader()
+                self._nback_header_written = True
+            writer.writerow({field: row.get(field, "") for field in NBACK_EVENT_FIELDS})
+        self.total_nback_trials += 1
+        if row.get("response_key") not in (None, ""):
+            self.total_nback_responses += 1
+
+    def write_nback_events(self, events: list[Any] | tuple[Any, ...]) -> None:
+        """Append 1-back event rows, creating a header even when empty."""
+
+        if not events and not self._nback_header_written:
+            with self.paths.nback_events_csv.open("w", newline="", encoding="utf-8") as handle:
+                csv.DictWriter(handle, fieldnames=NBACK_EVENT_FIELDS).writeheader()
+            self._nback_header_written = True
+            return
+        for event in events:
+            self.write_nback_event(event)
+
     def write_calibration(self, calibration: Any) -> None:
         """Write calibration.json."""
 
@@ -139,6 +185,8 @@ class DualTaskLogger:
         payload.setdefault("total_raw_frames", self.total_raw_frames)
         payload.setdefault("total_pinch_samples", self.total_pinch_samples)
         payload.setdefault("total_valid_pinch_samples", self.total_valid_pinch_samples)
+        payload.setdefault("total_nback_trials", self.total_nback_trials)
+        payload.setdefault("total_nback_responses", self.total_nback_responses)
         self.paths.summary_json.write_text(
             json.dumps(_json_safe(payload), indent=2, ensure_ascii=False, sort_keys=True),
             encoding="utf-8",
@@ -168,3 +216,14 @@ def _json_safe(value: Any) -> Any:
         return {str(key): _json_safe(item) for key, item in value.__dict__.items()}
     return str(value)
 
+
+def _record_to_row(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "to_csv_row"):
+        return dict(value.to_csv_row())
+    if hasattr(value, "to_dict"):
+        return dict(value.to_dict())
+    if hasattr(value, "__dict__"):
+        return dict(value.__dict__)
+    raise ValueError("event row must be a dict or object with row fields.")

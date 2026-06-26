@@ -110,6 +110,7 @@ def test_scheduler_state_machine_runs_plan_after_delays() -> None:
     assert contact.sampled_delay_ms == 500
     assert contact.duration_ms == 150
     assert contact.trigger_zone == "open_zone"
+    assert contact.actual_zone_at_emit == "open_zone"
     assert contact.trigger_pinch_distance == 0.08
     assert contact.trigger_frame_index == 10
     assert scheduler.state == WAIT_CLOSED_ZONE
@@ -122,6 +123,8 @@ def test_scheduler_state_machine_runs_plan_after_delays() -> None:
 
     slip = scheduler.update(zone="open_zone", now_ms=1950.0)[0]
     assert slip.event_name == "slip"
+    assert slip.trigger_zone == "closed_zone"
+    assert slip.actual_zone_at_emit == "open_zone"
     assert slip.sampled_gap_ms == 300
     assert slip.duration_ms == 800
     assert scheduler.state == PENDING_PLAN_EVENT
