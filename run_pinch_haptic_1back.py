@@ -285,7 +285,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             f"相同按 [{nback_timeline.config.key_same.upper()}] 键\n"
             f"不同按 [{nback_timeline.config.key_different.upper()}] 键\n\n"
             "按空格键开始正式双任务",
-            wait_key_name="space",
+            wait_key_name="k_space",
         )
         result = _run_live_formal_phase(
             server,

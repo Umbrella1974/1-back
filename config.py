@@ -29,7 +29,7 @@ KEY_DIFFERENT = 'right'         # 不同按键（右箭头）
 
 # 其他功能键
 KEY_QUIT = 'escape'          # 退出按键（ESC键）
-KEY_CONTINUE = 'space'       # 继续按键（空格键）
+KEY_CONTINUE = 'k_space'       # 继续按键（空格键）
 
 # 屏幕设置
 SCREEN_WIDTH = 800
