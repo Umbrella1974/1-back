@@ -37,10 +37,18 @@ class HapticPlanEvent:
     command_label: str | None = None
     command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
+    onset_delay_ms: tuple[int, int] | None = None
+    onset_gap_after_previous_ms: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["channel_list"] = list(self.channel_list)
+        if self.onset_delay_ms is not None:
+            payload["onset_delay_ms"] = list(self.onset_delay_ms)
+        if self.onset_gap_after_previous_ms is not None:
+            payload["onset_gap_after_previous_ms"] = list(
+                self.onset_gap_after_previous_ms
+            )
         return payload
 
 
@@ -54,18 +62,34 @@ class HapticZoneSpec:
 
 
 @dataclass(frozen=True)
+class HapticPlanTiming:
+    contact_onset_delay_ms: tuple[int, int] = (0, 0)
+    inter_event_gap_ms: tuple[int, int] = (0, 0)
+    refractory_ms: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contact_onset_delay_ms": list(self.contact_onset_delay_ms),
+            "inter_event_gap_ms": list(self.inter_event_gap_ms),
+            "refractory_ms": self.refractory_ms,
+        }
+
+
+@dataclass(frozen=True)
 class HapticPlanConfig:
     plan_id: str
     description: str
     random_seed: int | None
     events: tuple[HapticPlanEvent, ...]
     zones: dict[str, HapticZoneSpec]
+    timing: HapticPlanTiming = field(default_factory=HapticPlanTiming)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "plan_id": self.plan_id,
             "description": self.description,
             "random_seed": self.random_seed,
+            "timing": self.timing.to_dict(),
             "events": [event.to_dict() for event in self.events],
             "zones": {name: zone.to_dict() for name, zone in self.zones.items()},
         }
@@ -84,7 +108,7 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
 
     if not isinstance(payload, dict):
         raise ValueError("haptic plan config must be an object.")
-    allowed = {"plan_id", "description", "random_seed", "events", "zones"}
+    allowed = {"plan_id", "description", "random_seed", "timing", "events", "zones"}
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown haptic plan config keys: {', '.join(unknown)}")
@@ -95,6 +119,7 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
     random_seed = payload.get("random_seed")
     if random_seed is not None:
         random_seed = _int_value(random_seed, "random_seed")
+    timing = _parse_timing(payload.get("timing", {}))
     zones = _parse_zones(payload.get("zones"))
     events = _parse_events(payload.get("events"), zones)
     _validate_event_order(events)
@@ -104,6 +129,7 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
         random_seed=random_seed,
         events=tuple(events),
         zones=zones,
+        timing=timing,
     )
 
 
@@ -134,6 +160,8 @@ def _parse_event(
         "trigger_zone",
         "onset_policy",
         "channel_list",
+        "onset_delay_ms",
+        "onset_gap_after_previous_ms",
     }
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -153,7 +181,13 @@ def _parse_event(
     if trigger_zone not in zones:
         raise ValueError(f"{name_prefix}.trigger_zone references unknown zone: {trigger_zone}")
     duration_ms = _positive_int(payload.get("duration_ms"), f"{name_prefix}.duration_ms")
-    onset_policy = _parse_onset_policy(payload.get("onset_policy"), name_prefix, zones)
+    onset_policy = _parse_onset_policy(
+        payload.get("onset_policy"),
+        name_prefix,
+        zones,
+        default_trigger_zone=trigger_zone,
+        default_event_name=event_name,
+    )
     command_label = _optional_str(payload.get("command_label"))
     command_id = (
         _positive_int(payload.get("command_id"), f"{name_prefix}.command_id")
@@ -161,11 +195,28 @@ def _parse_event(
         else None
     )
     channel_list = _channel_list(payload.get("channel_list", ()), f"{name_prefix}.channel_list")
+    onset_delay_ms = (
+        _range_ms(payload.get("onset_delay_ms"), f"{name_prefix}.onset_delay_ms")
+        if payload.get("onset_delay_ms") is not None
+        else None
+    )
+    onset_gap_after_previous_ms = (
+        _range_ms(
+            payload.get("onset_gap_after_previous_ms"),
+            f"{name_prefix}.onset_gap_after_previous_ms",
+        )
+        if payload.get("onset_gap_after_previous_ms") is not None
+        else None
+    )
 
     if modality == "vibration" and command_label is None and command_id is None:
         raise ValueError(f"{name_prefix} vibration event requires command_label or command_id.")
     if modality == "matrix" and not channel_list:
         raise ValueError(f"{name_prefix} matrix event requires non-empty channel_list.")
+    if event_name == "contact" and onset_gap_after_previous_ms is not None:
+        raise ValueError(f"{name_prefix}.contact cannot use onset_gap_after_previous_ms.")
+    if event_name != "contact" and onset_delay_ms is not None:
+        raise ValueError(f"{name_prefix}.{event_name} cannot use onset_delay_ms.")
 
     return HapticPlanEvent(
         name=event_name,
@@ -176,6 +227,8 @@ def _parse_event(
         command_label=command_label,
         command_id=command_id,
         channel_list=channel_list,
+        onset_delay_ms=onset_delay_ms,
+        onset_gap_after_previous_ms=onset_gap_after_previous_ms,
     )
 
 
@@ -197,8 +250,15 @@ def _parse_onset_policy(
     payload: Any,
     event_prefix: str,
     zones: dict[str, HapticZoneSpec],
+    *,
+    default_trigger_zone: str,
+    default_event_name: str,
 ) -> HapticOnsetPolicy:
     name = f"{event_prefix}.onset_policy"
+    if payload is None:
+        if default_event_name == "contact":
+            return HapticOnsetPolicy(type="when_enter_zone", zone=default_trigger_zone)
+        return HapticOnsetPolicy(type="after_previous", gap_ms=0)
     if not isinstance(payload, dict):
         raise ValueError(f"{name} must be an object.")
     allowed = {"type", "zone", "from_zone", "to_zone", "gap_ms"}
@@ -248,6 +308,28 @@ def _parse_zones(value: Any) -> dict[str, HapticZoneSpec]:
             upper=_zone_bound(zone_payload.get("upper"), f"zones.{name}.upper"),
         )
     return zones
+
+
+def _parse_timing(value: Any) -> HapticPlanTiming:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("timing must be an object.")
+    allowed = {"contact_onset_delay_ms", "inter_event_gap_ms", "refractory_ms"}
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"unknown timing keys: {', '.join(unknown)}")
+    return HapticPlanTiming(
+        contact_onset_delay_ms=_range_ms(
+            value.get("contact_onset_delay_ms", (0, 0)),
+            "timing.contact_onset_delay_ms",
+        ),
+        inter_event_gap_ms=_range_ms(
+            value.get("inter_event_gap_ms", (0, 0)),
+            "timing.inter_event_gap_ms",
+        ),
+        refractory_ms=_non_negative_int(value.get("refractory_ms", 0), "timing.refractory_ms"),
+    )
 
 
 def _load_mapping(path: Path) -> dict[str, Any]:
@@ -316,6 +398,16 @@ def _channel_list(value: Any, name: str) -> tuple[int, ...]:
     return tuple(channels)
 
 
+def _range_ms(value: Any, name: str) -> tuple[int, int]:
+    if not isinstance(value, list | tuple) or len(value) != 2:
+        raise ValueError(f"{name} must be a two-item [min, max] list.")
+    lower = _non_negative_int(value[0], f"{name}[0]")
+    upper = _non_negative_int(value[1], f"{name}[1]")
+    if lower > upper:
+        raise ValueError(f"{name}[0] must be <= {name}[1].")
+    return lower, upper
+
+
 def _int_value(value: Any, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer.")
@@ -338,4 +430,3 @@ def _non_negative_int(value: Any, name: str) -> int:
     if result < 0:
         raise ValueError(f"{name} must be non-negative.")
     return result
-

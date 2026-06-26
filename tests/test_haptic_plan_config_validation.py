@@ -124,3 +124,55 @@ def test_vibration_event_requires_plan_command_not_hardcoded_default() -> None:
     with pytest.raises(ValueError, match="requires command_label or command_id"):
         haptic_plan_config_from_dict(payload)
 
+
+def test_scheduler_timing_schema_can_omit_onset_policy() -> None:
+    plan = haptic_plan_config_from_dict(
+        {
+            "plan_id": "plan_timing",
+            "description": "",
+            "timing": {
+                "contact_onset_delay_ms": [500, 2000],
+                "inter_event_gap_ms": [300, 1000],
+                "refractory_ms": 3000,
+            },
+            "events": [
+                {
+                    "name": "contact",
+                    "modality": "vibration",
+                    "command_label": "contact_enter",
+                    "command_id": 1,
+                    "duration_ms": 150,
+                    "trigger_zone": "open_zone",
+                    "onset_delay_ms": [600, 700],
+                },
+                {
+                    "name": "left",
+                    "modality": "matrix",
+                    "channel_list": [1, 2, 3],
+                    "duration_ms": 800,
+                    "trigger_zone": "closed_zone",
+                    "onset_gap_after_previous_ms": [350, 450],
+                },
+                {
+                    "name": "release",
+                    "modality": "vibration",
+                    "command_label": "contact_exit",
+                    "command_id": 2,
+                    "duration_ms": 150,
+                    "trigger_zone": "closed_zone",
+                },
+            ],
+            "zones": {
+                "open_zone": {"lower": "auto_a", "upper": "auto_max"},
+                "closed_zone": {"lower": "auto_min", "upper": "auto_a"},
+            },
+        }
+    )
+
+    assert plan.timing.contact_onset_delay_ms == (500, 2000)
+    assert plan.timing.inter_event_gap_ms == (300, 1000)
+    assert plan.timing.refractory_ms == 3000
+    assert plan.events[0].onset_policy.type == "when_enter_zone"
+    assert plan.events[0].onset_delay_ms == (600, 700)
+    assert plan.events[1].onset_policy.type == "after_previous"
+    assert plan.events[1].onset_gap_after_previous_ms == (350, 450)
