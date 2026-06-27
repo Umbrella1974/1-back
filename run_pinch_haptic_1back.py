@@ -619,6 +619,8 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "vibration_enabled": sender_config.vibration_enabled,
                 "matrix_enabled": sender_config.matrix_enabled,
                 "wrist_rotation_enabled": wrist_rotation_config.enabled,
+                "wrist_rotation_required": wrist_rotation_config.required,
+                "wrist_rotation_save_timeseries": wrist_rotation_config.save_timeseries,
                 "wrist_rotation_calibration_passed": (
                     wrist_calibration.calibration_passed
                     if wrist_calibration is not None
