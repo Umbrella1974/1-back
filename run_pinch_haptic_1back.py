@@ -900,7 +900,7 @@ def _run_live_formal_phase(
         total_haptic_events=total_haptic_events,
         total_nback_trials=logger.total_nback_trials,
         total_nback_responses=logger.total_nback_responses,
-        session_should_end=end_reason == "haptic_release",
+        session_should_end=_is_release_end_reason(end_reason),
         end_reason=end_reason,
         haptic_episode_completed=episode_state.completed,
         haptic_trial_count=episode_state.haptic_trial_count,
@@ -1185,6 +1185,14 @@ def _event_should_end_session(event: Any, policy: SessionEndPolicy) -> bool:
         and not policy.allow_multiple_haptic_trials
         and str(getattr(event, "event_name", "")) == "release"
     )
+
+
+def _is_release_end_reason(end_reason: str) -> bool:
+    return str(end_reason) in {
+        "haptic_release",
+        "haptic_release_post_recording",
+        "haptic_release_post_recording_complete",
+    }
 
 
 def _haptic_sequence_active(

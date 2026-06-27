@@ -10,6 +10,7 @@ from nback_dualtask_runner import NBackConfig, NBackTimeline
 from pinch_calibration import PinchCalibrationResult
 from run_pinch_haptic_1back import (
     SessionEndPolicy,
+    _is_release_end_reason,
     run_pinch_haptic_1back_core,
 )
 from simple_haptic_sender import SimpleHapticSender
@@ -70,6 +71,12 @@ def test_release_starts_post_recording_and_blocks_second_contact(tmp_path) -> No
     assert [row["event_name"] for row in rows] == ["contact", "release"]
     assert rows[-1]["end_reason"] == "haptic_release"
     assert rows[-1]["haptic_episode_completed"] == "True"
+
+
+def test_post_release_complete_counts_as_release_end_reason() -> None:
+    assert _is_release_end_reason("haptic_release") is True
+    assert _is_release_end_reason("haptic_release_post_recording_complete") is True
+    assert _is_release_end_reason("duration_elapsed") is False
 
 
 def _plan():
