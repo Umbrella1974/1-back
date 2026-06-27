@@ -45,12 +45,31 @@ NBACK_EVENT_FIELDS = [
 ]
 
 
+WRIST_ROTATION_TIMESERIES_FIELDS = [
+    "session_id",
+    "wall_time_iso",
+    "monotonic_ms",
+    "source_frame_id",
+    "node_id",
+    "q_w",
+    "q_x",
+    "q_y",
+    "q_z",
+    "wrist_rotation_valid",
+    "wrist_rotation_score",
+    "wrist_rotation_class",
+    "note",
+]
+
+
 @dataclass(frozen=True)
 class DualTaskOutputPaths:
     raw_frames_jsonl: Path
     pinch_timeseries_csv: Path
     haptic_events_csv: Path
     nback_events_csv: Path
+    wrist_rotation_calibration_json: Path
+    wrist_rotation_timeseries_csv: Path
     calibration_json: Path
     summary_json: Path
 
@@ -77,6 +96,8 @@ class DualTaskLogger:
             pinch_timeseries_csv=self.session_dir / "pinch_timeseries.csv",
             haptic_events_csv=self.session_dir / "haptic_events.csv",
             nback_events_csv=self.session_dir / "nback_events.csv",
+            wrist_rotation_calibration_json=self.session_dir / "wrist_rotation_calibration.json",
+            wrist_rotation_timeseries_csv=self.session_dir / "wrist_rotation_timeseries.csv",
             calibration_json=self.session_dir / "calibration.json",
             summary_json=self.session_dir / "summary.json",
         )
@@ -87,6 +108,7 @@ class DualTaskLogger:
         self.total_nback_responses = 0
         self._pinch_header_written = False
         self._nback_header_written = False
+        self._wrist_rotation_header_written = False
 
     def write_raw_frame(self, raw_frame: Any) -> None:
         """Append one raw combined JSON frame."""
@@ -175,6 +197,39 @@ class DualTaskLogger:
             json.dumps(_json_safe(payload), indent=2, ensure_ascii=False, sort_keys=True),
             encoding="utf-8",
         )
+
+    def write_wrist_rotation_calibration(self, calibration: Any) -> None:
+        """Write wrist_rotation_calibration.json."""
+
+        if hasattr(calibration, "to_dict"):
+            payload = calibration.to_dict()
+        elif hasattr(calibration, "__dict__"):
+            payload = dict(calibration.__dict__)
+        else:
+            payload = calibration
+        self.paths.wrist_rotation_calibration_json.write_text(
+            json.dumps(_json_safe(payload), indent=2, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def write_wrist_rotation_sample(self, sample: Any) -> None:
+        """Append one wrist rotation sample row."""
+
+        row = sample.to_csv_row() if hasattr(sample, "to_csv_row") else _record_to_row(sample)
+        row.setdefault("session_id", self.session_id)
+        mode = "a" if self._wrist_rotation_header_written else "w"
+        with self.paths.wrist_rotation_timeseries_csv.open(
+            mode,
+            newline="",
+            encoding="utf-8",
+        ) as handle:
+            writer = csv.DictWriter(handle, fieldnames=WRIST_ROTATION_TIMESERIES_FIELDS)
+            if not self._wrist_rotation_header_written:
+                writer.writeheader()
+                self._wrist_rotation_header_written = True
+            writer.writerow(
+                {field: row.get(field, "") for field in WRIST_ROTATION_TIMESERIES_FIELDS}
+            )
 
     def write_summary(self, summary: dict[str, Any]) -> None:
         """Write summary.json."""

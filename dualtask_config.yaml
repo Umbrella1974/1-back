@@ -21,6 +21,19 @@ pinch:
   thumb_node_id: 4
   target_finger_node_id: 14
 
+wrist_rotation:
+  enabled: false
+  node_id: 0
+  quaternion_order: wxyz
+  calibration_duration_s: 3.0
+  min_valid_frames: 30
+  feature_method: calibrated_axis_projection
+  neutral_label: neutral
+  left_label: left
+  right_label: right
+  classification_margin: 0.15
+  save_timeseries: true
+
 calibration:
   open_hand_duration_s: 3.0
   pinch_hand_duration_s: 3.0

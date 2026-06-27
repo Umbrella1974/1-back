@@ -47,6 +47,14 @@ from run_pinch_haptic_dry_run import (
 )
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
 from vendor_exp2_abc.live_raw_stream import LiveRawStreamServer
+from wrist_rotation import (
+    WristRotationCalibrationResult,
+    WristRotationConfig,
+    calibrate_wrist_rotation,
+    classify_wrist_rotation_frame,
+    extract_wrist_quaternion,
+    wrist_rotation_config_from_dict,
+)
 
 
 DEFAULT_TICK_INTERVAL_MS = 10.0
@@ -398,6 +406,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     calibration_config_payload = _object_section(config, "calibration")
     haptic_config = _object_section(config, "haptic")
     sync_config = _object_section(config, "sync")
+    wrist_rotation_config = wrist_rotation_config_from_dict(config.get("wrist_rotation"))
     haptic_debug_config = _haptic_debug_config_from_dualtask_config(config)
     session_end_policy = _session_end_policy_from_config(session_config)
     feedback_config = _haptic_feedback_display_from_dualtask_config(config)
@@ -468,6 +477,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     start_wall = _now_iso()
     total_haptic_events = 0
     calibration: PinchCalibrationResult | None = None
+    wrist_calibration: WristRotationCalibrationResult | None = None
     formal_result: PinchHaptic1BackCoreResult | None = None
     end_reason = ""
     server = _make_manus_tcp_server(manus_config)
@@ -525,6 +535,22 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             )
             return logger.session_dir
 
+        if wrist_rotation_config.enabled:
+            wrist_calibration = _run_live_wrist_rotation_calibration(
+                server,
+                logger,
+                config=wrist_rotation_config,
+                session_id=session_id,
+                save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+                tcp_log_state=manus_tcp_log_state,
+            )
+            logger.write_wrist_rotation_calibration(wrist_calibration)
+            if not wrist_calibration.calibration_passed:
+                warnings.append(
+                    "wrist_rotation_calibration_failed:"
+                    + str(wrist_calibration.failure_reason)
+                )
+
         display = _NBackPygameDisplay()
         display.show_text_and_wait(
             "1-Back 任务\n\n"
@@ -552,6 +578,8 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             session_end_policy=session_end_policy,
             haptic_feedback_display=feedback_config,
             duration_s=float(session_config.get("duration_s", 60)),
+            wrist_rotation_config=wrist_rotation_config,
+            wrist_rotation_calibration=wrist_calibration,
         )
         total_haptic_events = formal_result.total_haptic_events
         end_reason = formal_result.end_reason
@@ -583,6 +611,12 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "visual_text_cue_enabled": sender_config.visual_text_cue_enabled,
                 "vibration_enabled": sender_config.vibration_enabled,
                 "matrix_enabled": sender_config.matrix_enabled,
+                "wrist_rotation_enabled": wrist_rotation_config.enabled,
+                "wrist_rotation_calibration_passed": (
+                    wrist_calibration.calibration_passed
+                    if wrist_calibration is not None
+                    else False
+                ),
                 "warnings": warnings,
                 "errors": errors,
         }
@@ -606,6 +640,83 @@ def main() -> int:
     return 0
 
 
+def _run_live_wrist_rotation_calibration(
+    server: LiveRawStreamServer,
+    logger: DualTaskLogger,
+    *,
+    config: WristRotationConfig,
+    session_id: str,
+    save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None = None,
+) -> WristRotationCalibrationResult:
+    input("Wrist neutral calibration: press Enter, then keep wrist neutral...")
+    neutral = _collect_live_wrist_quaternions(
+        server,
+        logger,
+        config=config,
+        duration_s=config.calibration_duration_s,
+        save_raw_frames=save_raw_frames,
+        tcp_log_state=tcp_log_state,
+    )
+    input("Wrist left calibration: press Enter, then rotate wrist left...")
+    left = _collect_live_wrist_quaternions(
+        server,
+        logger,
+        config=config,
+        duration_s=config.calibration_duration_s,
+        save_raw_frames=save_raw_frames,
+        tcp_log_state=tcp_log_state,
+    )
+    input("Wrist right calibration: press Enter, then rotate wrist right...")
+    right = _collect_live_wrist_quaternions(
+        server,
+        logger,
+        config=config,
+        duration_s=config.calibration_duration_s,
+        save_raw_frames=save_raw_frames,
+        tcp_log_state=tcp_log_state,
+    )
+    result = calibrate_wrist_rotation(
+        neutral,
+        left,
+        right,
+        config=config,
+    )
+    if result.calibration_passed:
+        print(f"Wrist rotation calibration passed: threshold={result.threshold:.6f}")
+    else:
+        print(f"Wrist rotation calibration failed: {result.failure_reason}")
+    return result
+
+
+def _collect_live_wrist_quaternions(
+    server: LiveRawStreamServer,
+    logger: DualTaskLogger,
+    *,
+    config: WristRotationConfig,
+    duration_s: float,
+    save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None = None,
+) -> list[tuple[float, float, float, float]]:
+    deadline = time.monotonic() + float(duration_s)
+    quaternions: list[tuple[float, float, float, float]] = []
+    while time.monotonic() < deadline:
+        frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
+        if frame is None:
+            continue
+        raw = _raw_from_live_frame(frame)
+        if save_raw_frames:
+            logger.write_raw_frame(raw)
+        q = extract_wrist_quaternion(
+            frame,
+            node_id=config.node_id,
+            quaternion_order=config.quaternion_order,
+        )
+        if q is not None:
+            quaternions.append(q)
+    return quaternions
+
+
 def _run_live_formal_phase(
     server: LiveRawStreamServer,
     parser: ManusOnlyPinchInput,
@@ -624,6 +735,8 @@ def _run_live_formal_phase(
     session_end_policy: SessionEndPolicy | None = None,
     haptic_feedback_display: HapticFeedbackDisplayConfig | None = None,
     duration_s: float = 60.0,
+    wrist_rotation_config: WristRotationConfig | None = None,
+    wrist_rotation_calibration: WristRotationCalibrationResult | None = None,
 ) -> PinchHaptic1BackCoreResult:
     scheduler = HapticTrialScheduler(plan, scheduler_config)
     policy = session_end_policy or SessionEndPolicy()
@@ -635,6 +748,7 @@ def _run_live_formal_phase(
     total_haptic_events = 0
     zone_stats = ZoneRunStats()
     debug_config = haptic_debug_config or HapticDebugConfig()
+    wrist_config = wrist_rotation_config or WristRotationConfig()
     start_ms = time.monotonic() * 1000.0
     duration_deadline_ms = start_ms + max(0.0, float(duration_s)) * 1000.0
     nback_timeline.start(start_ms)
@@ -670,6 +784,19 @@ def _run_live_formal_phase(
                 print(f"enter {latest_zone}")
             previous_logged_zone = latest_zone
             logger.write_pinch_sample(latest_sample, calibration=calibration, zone=latest_zone)
+            if (
+                wrist_config.enabled
+                and wrist_config.save_timeseries
+                and wrist_rotation_calibration is not None
+            ):
+                logger.write_wrist_rotation_sample(
+                    classify_wrist_rotation_frame(
+                        frame,
+                        wrist_rotation_calibration,
+                        quaternion_order=wrist_config.quaternion_order,
+                        session_id=session_id,
+                    )
+                )
             if post_release_started_ms is not None:
                 post_release_pinch_samples += 1
             frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
