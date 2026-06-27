@@ -11,6 +11,7 @@ from nback_dualtask_runner import NBackConfig, NBackTimeline
 from pinch_calibration import PinchCalibrationResult
 from run_pinch_haptic_1back import (
     NBackResponseInput,
+    _pygame_key_constant,
     run_pinch_haptic_1back_core,
 )
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
@@ -86,6 +87,20 @@ def test_1back_core_advances_pinch_haptic_and_nback_outputs(tmp_path) -> None:
     assert all(row["tcp_enabled"] == "False" for row in haptic_rows)
     assert all(row["visual_text_cue_enabled"] == "False" for row in haptic_rows)
     assert "pygame" not in sys.modules
+
+
+def test_pygame_key_constant_accepts_space_aliases_without_importing_pygame() -> None:
+    class FakePygame:
+        K_SPACE = 32
+        K_LEFT = 276
+        K_a = 97
+        K_RETURN = 13
+
+    assert _pygame_key_constant(FakePygame, "space") == 32
+    assert _pygame_key_constant(FakePygame, "k_space") == 32
+    assert _pygame_key_constant(FakePygame, "left") == 276
+    assert _pygame_key_constant(FakePygame, "a") == 97
+    assert _pygame_key_constant(FakePygame, "enter") == 13
 
 
 def _calibration() -> PinchCalibrationResult:
