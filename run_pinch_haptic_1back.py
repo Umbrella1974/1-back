@@ -683,26 +683,22 @@ def _advance_scheduler_for_current_state(
     frame_index = (
         getattr(latest_sample, "frame_index", None) if latest_sample is not None else None
     )
-    for _ in range(64):
-        previous_state = getattr(scheduler, "state", "")
-        emitted = scheduler.update(
-            zone=zone,
-            now_ms=now_ms,
-            pinch_distance=pinch_distance,
-            frame_index=frame_index,
-            digit_onsets_ms=digit_onsets_ms,
+    previous_state = getattr(scheduler, "state", "")
+    emitted = scheduler.update(
+        zone=zone,
+        now_ms=now_ms,
+        pinch_distance=pinch_distance,
+        frame_index=frame_index,
+        digit_onsets_ms=digit_onsets_ms,
+    )
+    if debug_config.print_scheduler_events:
+        _print_scheduler_debug(
+            scheduler=scheduler,
+            previous_state=previous_state,
+            current_zone=zone,
+            emitted=emitted,
         )
-        if debug_config.print_scheduler_events:
-            _print_scheduler_debug(
-                scheduler=scheduler,
-                previous_state=previous_state,
-                current_zone=zone,
-                emitted=emitted,
-            )
-        events.extend(emitted)
-        pending_onset = _pending_onset_ms(scheduler)
-        if pending_onset is None or pending_onset > now_ms:
-            break
+    events.extend(emitted)
     return events
 
 

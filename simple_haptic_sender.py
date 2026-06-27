@@ -44,6 +44,7 @@ HAPTIC_EVENT_FIELDS = [
     "sync_warning",
     "sampled_delay_ms",
     "sampled_gap_ms",
+    "timing_note",
     "end_reason",
     "haptic_episode_completed",
     "note",
@@ -108,6 +109,7 @@ class HapticEventRecord:
     sync_warning: str = ""
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
+    timing_note: str = ""
     end_reason: str = ""
     haptic_episode_completed: bool = False
     note: str = ""
@@ -169,6 +171,7 @@ class SimpleHapticSender:
             actual_zone_at_emit=getattr(scheduled, "actual_zone_at_emit", None),
             trigger_pinch_distance=getattr(scheduled, "trigger_pinch_distance", None),
             trigger_frame_index=getattr(scheduled, "trigger_frame_index", None),
+            monotonic_ms=getattr(scheduled, "actual_emit_monotonic_ms", None),
             original_planned_onset_ms=getattr(
                 scheduled,
                 "original_planned_onset_ms",
@@ -181,6 +184,7 @@ class SimpleHapticSender:
             sync_warning=getattr(scheduled, "sync_warning", ""),
             sampled_delay_ms=getattr(scheduled, "sampled_delay_ms", None),
             sampled_gap_ms=getattr(scheduled, "sampled_gap_ms", None),
+            timing_note=getattr(scheduled, "timing_note", ""),
             end_reason=getattr(scheduled, "end_reason", ""),
             haptic_episode_completed=getattr(scheduled, "haptic_episode_completed", False),
         )
@@ -254,6 +258,7 @@ class SimpleHapticSender:
         actual_zone_at_emit: str | None = None,
         trigger_pinch_distance: float | None = None,
         trigger_frame_index: int | None = None,
+        monotonic_ms: float | None = None,
         original_planned_onset_ms: float | None = None,
         adjusted_onset_ms: float | None = None,
         nearest_digit_onset_ms: float | None = None,
@@ -262,6 +267,7 @@ class SimpleHapticSender:
         sync_warning: str = "",
         sampled_delay_ms: int | None = None,
         sampled_gap_ms: int | None = None,
+        timing_note: str = "",
         end_reason: str = "",
         haptic_episode_completed: bool = False,
         note: str = "",
@@ -288,7 +294,11 @@ class SimpleHapticSender:
             haptic_trial_index=int(haptic_trial_index),
             event_index=index,
             wall_time_iso=datetime.fromtimestamp(float(self.wall_time_fn()), timezone.utc).isoformat(),
-            monotonic_ms=float(self.monotonic_ms_fn()),
+            monotonic_ms=(
+                float(monotonic_ms)
+                if monotonic_ms is not None
+                else float(self.monotonic_ms_fn())
+            ),
             event_name=str(event_name),
             modality=str(modality),
             command_label=command_label,
@@ -324,6 +334,7 @@ class SimpleHapticSender:
             sync_warning=sync_warning,
             sampled_delay_ms=int(sampled_delay_ms) if sampled_delay_ms is not None else None,
             sampled_gap_ms=int(sampled_gap_ms) if sampled_gap_ms is not None else None,
+            timing_note=timing_note,
             end_reason=end_reason,
             haptic_episode_completed=bool(haptic_episode_completed),
             note=";".join(notes),

@@ -83,6 +83,7 @@ class ScheduledHapticEvent:
     actual_zone_at_emit: str = ""
     trigger_pinch_distance: float | None = None
     trigger_frame_index: int | None = None
+    actual_emit_monotonic_ms: float | None = None
     original_planned_onset_ms: float = 0.0
     adjusted_onset_ms: float = 0.0
     nearest_digit_onset_ms: float | None = None
@@ -91,6 +92,7 @@ class ScheduledHapticEvent:
     sync_warning: str = ""
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
+    timing_note: str = ""
     end_reason: str = ""
     haptic_episode_completed: bool = False
 
@@ -109,6 +111,7 @@ class _PendingEvent:
     global_default_used: bool
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
+    timing_note: str = ""
 
 
 def adjust_onset_away_from_digit_onsets(
@@ -223,6 +226,7 @@ class HapticTrialScheduler:
                     return events
                 events.append(
                     self._emit_pending(
+                        actual_emit_ms=now,
                         actual_zone_at_emit=zone,
                         pinch_distance=pinch_distance,
                         frame_index=frame_index,
@@ -233,7 +237,12 @@ class HapticTrialScheduler:
 
             if self.state == WAIT_CLOSED_ZONE:
                 if zone == "closed_zone":
-                    self._schedule_plan_event(1, digit_onsets_ms)
+                    self._schedule_plan_event(
+                        1,
+                        base_ms=now,
+                        digit_onsets_ms=digit_onsets_ms,
+                        timing_note="planned_after_closed_zone_enter",
+                    )
                 return events
 
             if self.state == PENDING_PLAN_EVENT:
@@ -241,6 +250,7 @@ class HapticTrialScheduler:
                 if pending is None or now < pending.adjustment.adjusted_onset_ms:
                     return events
                 emitted = self._emit_pending(
+                    actual_emit_ms=now,
                     actual_zone_at_emit=zone,
                     pinch_distance=pinch_distance,
                     frame_index=frame_index,
@@ -249,7 +259,12 @@ class HapticTrialScheduler:
                 if emitted.event_index >= len(self.plan.events) - 1:
                     self._enter_refractory(emitted)
                     return events
-                self._schedule_plan_event(emitted.event_index + 1, digit_onsets_ms)
+                self._schedule_plan_event(
+                    emitted.event_index + 1,
+                    base_ms=now + float(emitted.duration_ms),
+                    digit_onsets_ms=digit_onsets_ms,
+                    timing_note="planned_after_previous_actual_emit",
+                )
                 return events
 
             if self.state == REFRACTORY:
@@ -284,23 +299,25 @@ class HapticTrialScheduler:
             sampled_duration_ms=sampled_duration,
             global_default_used=global_default_used,
             sampled_delay_ms=sampled_delay,
+            timing_note="planned_after_open_zone_enter",
         )
         self.state = PENDING_CONTACT
 
     def _schedule_plan_event(
         self,
         event_index: int,
+        *,
+        base_ms: float,
         digit_onsets_ms: Iterable[float] | None,
+        timing_note: str,
     ) -> None:
         if event_index >= len(self.plan.events):
             raise ValueError("event_index exceeds plan length.")
-        if self._previous_event_end_ms is None:
-            raise RuntimeError("cannot schedule plan event before contact end.")
         event = self.plan.events[event_index]
         gap_range = event.onset_gap_after_previous_ms or self.plan.haptic_defaults.inter_event_gap_ms
         sampled_gap = self._sample_range(gap_range)
         sampled_duration, global_default_used = self._sample_event_duration(event)
-        original_onset = self._previous_event_end_ms + sampled_gap
+        original_onset = float(base_ms) + sampled_gap
         adjustment = self._adjust_onset(original_onset, digit_onsets_ms)
         if adjustment.should_skip:
             self._previous_event_end_ms = original_onset
@@ -312,7 +329,12 @@ class HapticTrialScheduler:
                 self.state = REFRACTORY
                 self._pending = None
             else:
-                self._schedule_plan_event(event_index + 1, digit_onsets_ms)
+                self._schedule_plan_event(
+                    event_index + 1,
+                    base_ms=original_onset + sampled_duration,
+                    digit_onsets_ms=digit_onsets_ms,
+                    timing_note="planned_after_previous_actual_emit",
+                )
             return
         self._pending = _PendingEvent(
             event_index=event_index,
@@ -321,12 +343,14 @@ class HapticTrialScheduler:
             sampled_duration_ms=sampled_duration,
             global_default_used=global_default_used,
             sampled_gap_ms=sampled_gap,
+            timing_note=timing_note,
         )
         self.state = PENDING_PLAN_EVENT
 
     def _emit_pending(
         self,
         *,
+        actual_emit_ms: float,
         actual_zone_at_emit: str,
         pinch_distance: float | None,
         frame_index: int | None,
@@ -353,6 +377,7 @@ class HapticTrialScheduler:
                 float(pinch_distance) if pinch_distance is not None else None
             ),
             trigger_frame_index=int(frame_index) if frame_index is not None else None,
+            actual_emit_monotonic_ms=float(actual_emit_ms),
             original_planned_onset_ms=adjustment.original_planned_onset_ms,
             adjusted_onset_ms=adjustment.adjusted_onset_ms,
             nearest_digit_onset_ms=adjustment.nearest_digit_onset_ms,
@@ -361,18 +386,19 @@ class HapticTrialScheduler:
             sync_warning=adjustment.sync_warning,
             sampled_delay_ms=pending.sampled_delay_ms,
             sampled_gap_ms=pending.sampled_gap_ms,
+            timing_note=pending.timing_note,
             end_reason="haptic_release" if event.name == "release" else "",
             haptic_episode_completed=event.name == "release",
         )
         self._previous_event_end_ms = (
-            scheduled.adjusted_onset_ms + float(scheduled.duration_ms)
+            float(actual_emit_ms) + float(scheduled.duration_ms)
         )
         self._pending = None
         return scheduled
 
     def _enter_refractory(self, event: ScheduledHapticEvent) -> None:
         self._refractory_until_ms = (
-            event.adjusted_onset_ms
+            float(event.actual_emit_monotonic_ms or event.adjusted_onset_ms)
             + float(event.duration_ms)
             + float(self.plan.timing.refractory_ms)
         )

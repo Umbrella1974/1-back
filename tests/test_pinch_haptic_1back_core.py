@@ -84,6 +84,11 @@ def test_1back_core_advances_pinch_haptic_and_nback_outputs(tmp_path) -> None:
         "right",
         "release",
     ]
+    emit_times = [float(row["monotonic_ms"]) for row in haptic_rows]
+    assert len(set(emit_times)) == len(emit_times)
+    for previous, current in zip(haptic_rows[1:], haptic_rows[2:]):
+        expected_gap = int(previous["duration_ms"]) + int(current["sampled_gap_ms"])
+        assert float(current["monotonic_ms"]) - float(previous["monotonic_ms"]) >= expected_gap
     assert haptic_rows[0]["actual_zone_at_emit"] == "open_zone"
     assert all(row["session_id"] == session_id for row in nback_rows)
     assert all(row["session_id"] == session_id for row in pinch_rows)
@@ -269,10 +274,10 @@ def _slow_contact_plan():
 def _samples(session_id: str) -> list[PinchInputSample]:
     return [
         _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
-        _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.02),
-        _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
-        _sample(session_id, frame_index=4, monotonic_ms=1003.0, distance=0.02),
-        _sample(session_id, frame_index=5, monotonic_ms=1004.0, distance=0.02),
+        _sample(session_id, frame_index=2, monotonic_ms=1005.0, distance=0.08),
+        _sample(session_id, frame_index=3, monotonic_ms=1010.0, distance=0.02),
+        _sample(session_id, frame_index=4, monotonic_ms=1020.0, distance=0.02),
+        _sample(session_id, frame_index=5, monotonic_ms=1030.0, distance=0.02),
     ]
 
 

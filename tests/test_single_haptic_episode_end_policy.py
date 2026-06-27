@@ -34,9 +34,10 @@ def test_release_sets_session_should_end_and_blocks_second_contact(tmp_path) -> 
     result = run_pinch_haptic_1back_core(
         [
             _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
-            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.02),
-            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.08),
-            _sample(session_id, frame_index=4, monotonic_ms=1003.0, distance=0.02),
+            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.08),
+            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
+            _sample(session_id, frame_index=4, monotonic_ms=1003.0, distance=0.08),
+            _sample(session_id, frame_index=5, monotonic_ms=1004.0, distance=0.02),
         ],
         calibration=_calibration(),
         plan=_plan(),
