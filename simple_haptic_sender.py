@@ -23,6 +23,8 @@ HAPTIC_EVENT_FIELDS = [
     "command_id",
     "channel_list",
     "duration_ms",
+    "sampled_duration_ms",
+    "global_default_used",
     "trigger_zone",
     "actual_zone_at_emit",
     "trigger_pinch_distance",
@@ -42,6 +44,8 @@ HAPTIC_EVENT_FIELDS = [
     "sync_warning",
     "sampled_delay_ms",
     "sampled_gap_ms",
+    "end_reason",
+    "haptic_episode_completed",
     "note",
 ]
 
@@ -83,6 +87,8 @@ class HapticEventRecord:
     command_id: int | None = None
     channel_list: list[int] = field(default_factory=list)
     duration_ms: int | None = None
+    sampled_duration_ms: int | None = None
+    global_default_used: bool = False
     trigger_zone: str | None = None
     actual_zone_at_emit: str | None = None
     trigger_pinch_distance: float | None = None
@@ -102,6 +108,8 @@ class HapticEventRecord:
     sync_warning: str = ""
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
+    end_reason: str = ""
+    haptic_episode_completed: bool = False
     note: str = ""
 
     def to_csv_row(self) -> dict[str, Any]:
@@ -155,6 +163,8 @@ class SimpleHapticSender:
             command_label=getattr(scheduled, "command_label", None),
             command_id=getattr(scheduled, "command_id", None),
             duration_ms=getattr(scheduled, "duration_ms", None),
+            sampled_duration_ms=getattr(scheduled, "sampled_duration_ms", None),
+            global_default_used=getattr(scheduled, "global_default_used", False),
             trigger_zone=getattr(scheduled, "trigger_zone", None),
             actual_zone_at_emit=getattr(scheduled, "actual_zone_at_emit", None),
             trigger_pinch_distance=getattr(scheduled, "trigger_pinch_distance", None),
@@ -171,6 +181,8 @@ class SimpleHapticSender:
             sync_warning=getattr(scheduled, "sync_warning", ""),
             sampled_delay_ms=getattr(scheduled, "sampled_delay_ms", None),
             sampled_gap_ms=getattr(scheduled, "sampled_gap_ms", None),
+            end_reason=getattr(scheduled, "end_reason", ""),
+            haptic_episode_completed=getattr(scheduled, "haptic_episode_completed", False),
         )
         if event_name == "contact":
             return self.send_contact(**kwargs)
@@ -186,6 +198,16 @@ class SimpleHapticSender:
         if event_name == "right":
             return self.send_matrix_right(
                 list(getattr(scheduled, "channel_list", ()) or ()),
+                **kwargs,
+            )
+        modality = str(getattr(scheduled, "modality", ""))
+        if modality == "vibration":
+            return self._record_event(event_name, "vibration", **kwargs)
+        if modality == "matrix":
+            return self._record_event(
+                event_name,
+                "matrix",
+                channel_list=list(getattr(scheduled, "channel_list", ()) or ()),
                 **kwargs,
             )
         raise ValueError(f"unsupported scheduled haptic event: {event_name}")
@@ -226,6 +248,8 @@ class SimpleHapticSender:
         command_id: int | None = None,
         channel_list: list[int] | tuple[int, ...] | None = None,
         duration_ms: int | None = None,
+        sampled_duration_ms: int | None = None,
+        global_default_used: bool = False,
         trigger_zone: str | None = None,
         actual_zone_at_emit: str | None = None,
         trigger_pinch_distance: float | None = None,
@@ -238,6 +262,8 @@ class SimpleHapticSender:
         sync_warning: str = "",
         sampled_delay_ms: int | None = None,
         sampled_gap_ms: int | None = None,
+        end_reason: str = "",
+        haptic_episode_completed: bool = False,
         note: str = "",
     ) -> HapticEventRecord:
         index = len(self.records) if event_index is None else int(event_index)
@@ -269,6 +295,10 @@ class SimpleHapticSender:
             command_id=int(command_id) if command_id is not None else None,
             channel_list=_validate_channel_list(channel_list or ()),
             duration_ms=int(duration_ms) if duration_ms is not None else None,
+            sampled_duration_ms=(
+                int(sampled_duration_ms) if sampled_duration_ms is not None else None
+            ),
+            global_default_used=bool(global_default_used),
             trigger_zone=trigger_zone,
             actual_zone_at_emit=actual_zone_at_emit,
             trigger_pinch_distance=(
@@ -294,6 +324,8 @@ class SimpleHapticSender:
             sync_warning=sync_warning,
             sampled_delay_ms=int(sampled_delay_ms) if sampled_delay_ms is not None else None,
             sampled_gap_ms=int(sampled_gap_ms) if sampled_gap_ms is not None else None,
+            end_reason=end_reason,
+            haptic_episode_completed=bool(haptic_episode_completed),
             note=";".join(notes),
         )
         self.records.append(record)

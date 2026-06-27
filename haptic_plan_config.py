@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any
 
 
-LEGAL_MIDDLE_EVENTS = {"slip", "left", "right"}
-LEGAL_EVENT_NAMES = {"contact", "release", *LEGAL_MIDDLE_EVENTS}
 LEGAL_MODALITIES = {"vibration", "matrix"}
 LEGAL_ONSET_POLICY_TYPES = {"when_enter_zone", "after_zone_transition", "after_previous"}
 AUTO_ZONE_VALUES = {"auto_min", "auto_a", "auto_max"}
@@ -31,24 +29,38 @@ class HapticOnsetPolicy:
 class HapticPlanEvent:
     name: str
     modality: str
-    duration_ms: int
     trigger_zone: str
     onset_policy: HapticOnsetPolicy
+    duration_ms: int | None = None
+    duration_ms_range: tuple[int, int] | None = None
     command_label: str | None = None
     command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
+    payload: dict[str, Any] | None = None
     onset_delay_ms: tuple[int, int] | None = None
     onset_gap_after_previous_ms: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["channel_list"] = list(self.channel_list)
+        if payload.get("duration_ms") is None:
+            payload.pop("duration_ms", None)
+        if self.duration_ms_range is not None:
+            payload["duration_ms_range"] = list(self.duration_ms_range)
+        else:
+            payload.pop("duration_ms_range", None)
+        if self.payload is None:
+            payload.pop("payload", None)
         if self.onset_delay_ms is not None:
             payload["onset_delay_ms"] = list(self.onset_delay_ms)
+        else:
+            payload.pop("onset_delay_ms", None)
         if self.onset_gap_after_previous_ms is not None:
             payload["onset_gap_after_previous_ms"] = list(
                 self.onset_gap_after_previous_ms
             )
+        else:
+            payload.pop("onset_gap_after_previous_ms", None)
         return payload
 
 
@@ -76,6 +88,24 @@ class HapticPlanTiming:
 
 
 @dataclass(frozen=True)
+class HapticDefaults:
+    vibration_duration_ms: tuple[int, int] = (150, 300)
+    matrix_duration_ms: tuple[int, int] = (500, 1000)
+    inter_event_gap_ms: tuple[int, int] = (300, 1000)
+    contact_onset_delay_ms: tuple[int, int] = (500, 2000)
+    release_duration_ms: tuple[int, int] = (150, 300)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "vibration_duration_ms": list(self.vibration_duration_ms),
+            "matrix_duration_ms": list(self.matrix_duration_ms),
+            "inter_event_gap_ms": list(self.inter_event_gap_ms),
+            "contact_onset_delay_ms": list(self.contact_onset_delay_ms),
+            "release_duration_ms": list(self.release_duration_ms),
+        }
+
+
+@dataclass(frozen=True)
 class HapticPlanConfig:
     plan_id: str
     description: str
@@ -83,6 +113,7 @@ class HapticPlanConfig:
     events: tuple[HapticPlanEvent, ...]
     zones: dict[str, HapticZoneSpec]
     timing: HapticPlanTiming = field(default_factory=HapticPlanTiming)
+    haptic_defaults: HapticDefaults = field(default_factory=HapticDefaults)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +121,7 @@ class HapticPlanConfig:
             "description": self.description,
             "random_seed": self.random_seed,
             "timing": self.timing.to_dict(),
+            "haptic_defaults": self.haptic_defaults.to_dict(),
             "events": [event.to_dict() for event in self.events],
             "zones": {name: zone.to_dict() for name, zone in self.zones.items()},
         }
@@ -108,7 +140,15 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
 
     if not isinstance(payload, dict):
         raise ValueError("haptic plan config must be an object.")
-    allowed = {"plan_id", "description", "random_seed", "timing", "events", "zones"}
+    allowed = {
+        "plan_id",
+        "description",
+        "random_seed",
+        "timing",
+        "haptic_defaults",
+        "events",
+        "zones",
+    }
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown haptic plan config keys: {', '.join(unknown)}")
@@ -122,6 +162,7 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
     if "timing" not in payload:
         raise ValueError("timing is required.")
     timing = _parse_timing(payload.get("timing"))
+    haptic_defaults = _parse_haptic_defaults(payload.get("haptic_defaults"), timing)
     zones = _parse_zones(payload.get("zones"))
     events = _parse_events(payload.get("events"), zones)
     _validate_event_order(events)
@@ -132,7 +173,18 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
         events=tuple(events),
         zones=zones,
         timing=timing,
+        haptic_defaults=haptic_defaults,
     )
+
+
+def haptic_defaults_from_dict(
+    payload: dict[str, Any],
+    *,
+    timing: HapticPlanTiming | None = None,
+) -> HapticDefaults:
+    """Parse haptic defaults from a global dual-task config section."""
+
+    return _parse_haptic_defaults(payload, timing or HapticPlanTiming())
 
 
 def _parse_events(
@@ -159,9 +211,11 @@ def _parse_event(
         "command_label",
         "command_id",
         "duration_ms",
+        "duration_ms_range",
         "trigger_zone",
         "onset_policy",
         "channel_list",
+        "payload",
         "onset_delay_ms",
         "onset_gap_after_previous_ms",
     }
@@ -170,19 +224,25 @@ def _parse_event(
         raise ValueError(f"unknown {name_prefix} keys: {', '.join(unknown)}")
 
     event_name = str(payload.get("name", "")).strip()
-    if event_name not in LEGAL_EVENT_NAMES:
-        raise ValueError(f"{name_prefix}.name must be one of: {', '.join(sorted(LEGAL_EVENT_NAMES))}.")
+    if not event_name:
+        raise ValueError(f"{name_prefix}.name is required.")
     modality = str(payload.get("modality", "")).strip()
     if modality not in LEGAL_MODALITIES:
         raise ValueError(f"{name_prefix}.modality must be vibration or matrix.")
-    expected_modality = "matrix" if event_name in {"left", "right"} else "vibration"
-    if modality != expected_modality:
-        raise ValueError(f"{name_prefix}.{event_name} must use modality {expected_modality}.")
 
     trigger_zone = str(payload.get("trigger_zone", "")).strip()
     if trigger_zone not in zones:
         raise ValueError(f"{name_prefix}.trigger_zone references unknown zone: {trigger_zone}")
-    duration_ms = _positive_int(payload.get("duration_ms"), f"{name_prefix}.duration_ms")
+    duration_ms = (
+        _positive_int(payload.get("duration_ms"), f"{name_prefix}.duration_ms")
+        if payload.get("duration_ms") is not None
+        else None
+    )
+    duration_ms_range = (
+        _range_ms(payload.get("duration_ms_range"), f"{name_prefix}.duration_ms_range")
+        if payload.get("duration_ms_range") is not None
+        else None
+    )
     onset_policy = _parse_onset_policy(
         payload.get("onset_policy"),
         name_prefix,
@@ -197,6 +257,7 @@ def _parse_event(
         else None
     )
     channel_list = _channel_list(payload.get("channel_list", ()), f"{name_prefix}.channel_list")
+    event_payload = _optional_mapping(payload.get("payload"), f"{name_prefix}.payload")
     onset_delay_ms = (
         _range_ms(payload.get("onset_delay_ms"), f"{name_prefix}.onset_delay_ms")
         if payload.get("onset_delay_ms") is not None
@@ -211,10 +272,12 @@ def _parse_event(
         else None
     )
 
+    if duration_ms is not None and duration_ms_range is not None:
+        raise ValueError(f"{name_prefix} cannot use both duration_ms and duration_ms_range.")
     if modality == "vibration" and command_label is None and command_id is None:
         raise ValueError(f"{name_prefix} vibration event requires command_label or command_id.")
-    if modality == "matrix" and not channel_list:
-        raise ValueError(f"{name_prefix} matrix event requires non-empty channel_list.")
+    if modality == "matrix" and not channel_list and event_payload is None:
+        raise ValueError(f"{name_prefix} matrix event requires non-empty channel_list or payload.")
     if event_name == "contact" and onset_gap_after_previous_ms is not None:
         raise ValueError(f"{name_prefix}.contact cannot use onset_gap_after_previous_ms.")
     if event_name != "contact" and onset_delay_ms is not None:
@@ -223,12 +286,14 @@ def _parse_event(
     return HapticPlanEvent(
         name=event_name,
         modality=modality,
-        duration_ms=duration_ms,
         trigger_zone=trigger_zone,
         onset_policy=onset_policy,
+        duration_ms=duration_ms,
+        duration_ms_range=duration_ms_range,
         command_label=command_label,
         command_id=command_id,
         channel_list=channel_list,
+        payload=event_payload,
         onset_delay_ms=onset_delay_ms,
         onset_gap_after_previous_ms=onset_gap_after_previous_ms,
     )
@@ -241,11 +306,6 @@ def _validate_event_order(events: list[HapticPlanEvent]) -> None:
         raise ValueError("first haptic plan event must be contact.")
     if events[-1].name != "release":
         raise ValueError("last haptic plan event must be release.")
-    for index, event in enumerate(events[1:-1], start=1):
-        if event.name not in LEGAL_MIDDLE_EVENTS:
-            raise ValueError(
-                f"middle haptic plan event at index {index} must be slip, left, or right."
-            )
 
 
 def _parse_onset_policy(
@@ -334,6 +394,48 @@ def _parse_timing(value: Any) -> HapticPlanTiming:
     )
 
 
+def _parse_haptic_defaults(
+    value: Any,
+    timing: HapticPlanTiming,
+) -> HapticDefaults:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("haptic_defaults must be an object.")
+    allowed = {
+        "vibration_duration_ms",
+        "matrix_duration_ms",
+        "inter_event_gap_ms",
+        "contact_onset_delay_ms",
+        "release_duration_ms",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"unknown haptic_defaults keys: {', '.join(unknown)}")
+    return HapticDefaults(
+        vibration_duration_ms=_range_ms(
+            value.get("vibration_duration_ms", (150, 300)),
+            "haptic_defaults.vibration_duration_ms",
+        ),
+        matrix_duration_ms=_range_ms(
+            value.get("matrix_duration_ms", (500, 1000)),
+            "haptic_defaults.matrix_duration_ms",
+        ),
+        inter_event_gap_ms=_range_ms(
+            value.get("inter_event_gap_ms", timing.inter_event_gap_ms),
+            "haptic_defaults.inter_event_gap_ms",
+        ),
+        contact_onset_delay_ms=_range_ms(
+            value.get("contact_onset_delay_ms", timing.contact_onset_delay_ms),
+            "haptic_defaults.contact_onset_delay_ms",
+        ),
+        release_duration_ms=_range_ms(
+            value.get("release_duration_ms", (150, 300)),
+            "haptic_defaults.release_duration_ms",
+        ),
+    )
+
+
 def _load_mapping(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"haptic plan config not found: {path}")
@@ -383,6 +485,14 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_mapping(value: Any, name: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object.")
+    return dict(value)
 
 
 def _channel_list(value: Any, name: str) -> tuple[int, ...]:

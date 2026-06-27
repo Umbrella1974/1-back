@@ -5,6 +5,9 @@ session:
   condition_id: ""
   duration_s: 60
   haptic_plan_config: haptic_plan_config_example.yaml
+  end_policy: stop_on_haptic_release
+  allow_multiple_haptic_trials: false
+  finish_active_haptic_before_exit: true
 
 manus:
   tcp_host: 127.0.0.1
@@ -28,6 +31,17 @@ haptic:
   vibration_enabled: false
   matrix_enabled: false
   visual_text_cue_enabled: false
+
+haptic_defaults:
+  vibration_duration_ms: [150, 300]
+  matrix_duration_ms: [500, 1000]
+  inter_event_gap_ms: [300, 1000]
+  contact_onset_delay_ms: [500, 2000]
+  release_duration_ms: [150, 300]
+
+haptic_feedback_display:
+  mode: console
+  print_on_emit: true
 
 haptic_debug:
   print_zone_transitions: false

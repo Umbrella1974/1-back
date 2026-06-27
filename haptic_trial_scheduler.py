@@ -77,6 +77,8 @@ class ScheduledHapticEvent:
     command_id: int | None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     duration_ms: int = 0
+    sampled_duration_ms: int | None = None
+    global_default_used: bool = False
     trigger_zone: str = ""
     actual_zone_at_emit: str = ""
     trigger_pinch_distance: float | None = None
@@ -89,6 +91,8 @@ class ScheduledHapticEvent:
     sync_warning: str = ""
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
+    end_reason: str = ""
+    haptic_episode_completed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -101,6 +105,8 @@ class _PendingEvent:
     event_index: int
     event: HapticPlanEvent
     adjustment: OnsetAdjustment
+    sampled_duration_ms: int
+    global_default_used: bool
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
 
@@ -262,8 +268,9 @@ class HapticTrialScheduler:
         digit_onsets_ms: Iterable[float] | None,
     ) -> None:
         event = self.plan.events[0]
-        delay_range = event.onset_delay_ms or self.plan.timing.contact_onset_delay_ms
+        delay_range = event.onset_delay_ms or self.plan.haptic_defaults.contact_onset_delay_ms
         sampled_delay = self._sample_range(delay_range)
+        sampled_duration, global_default_used = self._sample_event_duration(event)
         original_onset = now_ms + sampled_delay
         adjustment = self._adjust_onset(original_onset, digit_onsets_ms)
         if adjustment.should_skip:
@@ -274,6 +281,8 @@ class HapticTrialScheduler:
             event_index=0,
             event=event,
             adjustment=adjustment,
+            sampled_duration_ms=sampled_duration,
+            global_default_used=global_default_used,
             sampled_delay_ms=sampled_delay,
         )
         self.state = PENDING_CONTACT
@@ -288,8 +297,9 @@ class HapticTrialScheduler:
         if self._previous_event_end_ms is None:
             raise RuntimeError("cannot schedule plan event before contact end.")
         event = self.plan.events[event_index]
-        gap_range = event.onset_gap_after_previous_ms or self.plan.timing.inter_event_gap_ms
+        gap_range = event.onset_gap_after_previous_ms or self.plan.haptic_defaults.inter_event_gap_ms
         sampled_gap = self._sample_range(gap_range)
+        sampled_duration, global_default_used = self._sample_event_duration(event)
         original_onset = self._previous_event_end_ms + sampled_gap
         adjustment = self._adjust_onset(original_onset, digit_onsets_ms)
         if adjustment.should_skip:
@@ -308,6 +318,8 @@ class HapticTrialScheduler:
             event_index=event_index,
             event=event,
             adjustment=adjustment,
+            sampled_duration_ms=sampled_duration,
+            global_default_used=global_default_used,
             sampled_gap_ms=sampled_gap,
         )
         self.state = PENDING_PLAN_EVENT
@@ -332,7 +344,9 @@ class HapticTrialScheduler:
             command_label=event.command_label,
             command_id=event.command_id,
             channel_list=event.channel_list,
-            duration_ms=event.duration_ms,
+            duration_ms=pending.sampled_duration_ms,
+            sampled_duration_ms=pending.sampled_duration_ms,
+            global_default_used=pending.global_default_used,
             trigger_zone=event.trigger_zone,
             actual_zone_at_emit=str(actual_zone_at_emit),
             trigger_pinch_distance=(
@@ -347,6 +361,8 @@ class HapticTrialScheduler:
             sync_warning=adjustment.sync_warning,
             sampled_delay_ms=pending.sampled_delay_ms,
             sampled_gap_ms=pending.sampled_gap_ms,
+            end_reason="haptic_release" if event.name == "release" else "",
+            haptic_episode_completed=event.name == "release",
         )
         self._previous_event_end_ms = (
             scheduled.adjusted_onset_ms + float(scheduled.duration_ms)
@@ -381,6 +397,20 @@ class HapticTrialScheduler:
     def _sample_range(self, value: tuple[int, int]) -> int:
         lower, upper = value
         return int(self.rng.randint(int(lower), int(upper)))
+
+    def _sample_event_duration(self, event: HapticPlanEvent) -> tuple[int, bool]:
+        if event.duration_ms is not None:
+            return int(event.duration_ms), False
+        if event.duration_ms_range is not None:
+            return self._sample_range(event.duration_ms_range), False
+        return self._sample_range(self._default_duration_range(event)), True
+
+    def _default_duration_range(self, event: HapticPlanEvent) -> tuple[int, int]:
+        if event.name in {"contact", "release"}:
+            return self.plan.haptic_defaults.release_duration_ms
+        if event.modality == "matrix":
+            return self.plan.haptic_defaults.matrix_duration_ms
+        return self.plan.haptic_defaults.vibration_duration_ms
 
     def _clear_pending(self) -> None:
         self._pending = None

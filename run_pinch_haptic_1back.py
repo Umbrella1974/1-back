@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from dualtask_logger import DualTaskLogger, make_session_id
-from haptic_plan_config import HapticPlanConfig, load_haptic_plan_config
+from haptic_plan_config import (
+    HapticPlanConfig,
+    haptic_defaults_from_dict,
+    load_haptic_plan_config,
+)
 from haptic_trial_scheduler import HapticTrialScheduler, HapticTrialSchedulerConfig
 from manus_pinch_input import ManusOnlyPinchInput, ManusPinchInputConfig, PinchInputSample
 from nback_dualtask_runner import (
@@ -56,6 +60,46 @@ CALIBRATION_FAILURE_MESSAGE = (
 class HapticDebugConfig:
     print_zone_transitions: bool = False
     print_scheduler_events: bool = True
+
+
+@dataclass(frozen=True)
+class SessionEndPolicy:
+    end_policy: str = "stop_on_haptic_release"
+    allow_multiple_haptic_trials: bool = False
+    finish_active_haptic_before_exit: bool = True
+
+
+@dataclass(frozen=True)
+class HapticFeedbackDisplayConfig:
+    mode: str = "none"
+    print_on_emit: bool = True
+
+
+@dataclass
+class HapticEpisodeState:
+    active: bool = False
+    completed: bool = False
+    haptic_trial_count: int = 0
+    last_haptic_event_name: str = ""
+    interrupted_haptic_trial: bool = False
+
+    def observe(self, event: Any) -> None:
+        event_name = str(getattr(event, "event_name", ""))
+        self.last_haptic_event_name = event_name
+        if event_name == "contact":
+            self.active = True
+            self.completed = False
+            self.haptic_trial_count = max(
+                self.haptic_trial_count,
+                int(getattr(event, "haptic_trial_index", 0)) + 1,
+            )
+        if event_name == "release":
+            self.active = False
+            self.completed = True
+            self.haptic_trial_count = max(
+                self.haptic_trial_count,
+                int(getattr(event, "haptic_trial_index", 0)) + 1,
+            )
 
 
 @dataclass
@@ -130,6 +174,14 @@ class PinchHaptic1BackCoreResult:
     max_closed_zone_duration_ms: float = 0.0
     open_zone_run_count: int = 0
     closed_zone_run_count: int = 0
+    session_should_end: bool = False
+    end_reason: str = ""
+    haptic_episode_completed: bool = False
+    haptic_trial_count: int = 0
+    last_haptic_event_name: str = ""
+    interrupted_haptic_trial: bool = False
+    allow_multiple_haptic_trials: bool = True
+    finish_active_haptic_before_exit: bool = True
 
 
 def run_pinch_haptic_1back_core(
@@ -145,6 +197,9 @@ def run_pinch_haptic_1back_core(
     start_monotonic_ms: float | None = None,
     end_monotonic_ms: float | None = None,
     tick_interval_ms: float = DEFAULT_TICK_INTERVAL_MS,
+    session_end_policy: SessionEndPolicy | None = None,
+    haptic_feedback_display: HapticFeedbackDisplayConfig | None = None,
+    print_fn: Any = print,
 ) -> PinchHaptic1BackCoreResult:
     """Run a deterministic dual-task loop without Pygame, TCP, or ESP32."""
 
@@ -174,6 +229,12 @@ def run_pinch_haptic_1back_core(
 
     haptic_sender = sender or SimpleHapticSender(session_id=logger.session_id)
     scheduler = HapticTrialScheduler(plan, scheduler_config)
+    policy = session_end_policy or SessionEndPolicy(
+        allow_multiple_haptic_trials=True,
+        finish_active_haptic_before_exit=False,
+    )
+    feedback_config = haptic_feedback_display or HapticFeedbackDisplayConfig()
+    episode_state = HapticEpisodeState()
     latest_sample: PinchInputSample | None = None
     latest_zone = "invalid"
     sample_index = 0
@@ -182,8 +243,11 @@ def run_pinch_haptic_1back_core(
     now_ms = float(start_monotonic_ms)
     end_ms = float(end_monotonic_ms)
     zone_stats = ZoneRunStats()
+    session_should_end = False
+    end_reason = ""
+    final_now_ms = end_ms
 
-    while now_ms <= end_ms + 1e-9:
+    while True:
         while (
             sample_index < len(sample_list)
             and float(getattr(sample_list[sample_index], "monotonic_ms")) <= now_ms + 1e-9
@@ -217,14 +281,29 @@ def run_pinch_haptic_1back_core(
         )
         for event in emitted:
             haptic_sender.record_scheduled_event(event)
+            episode_state.observe(event)
+            _print_haptic_feedback_if_needed(
+                event,
+                feedback_config,
+                print_fn=print_fn,
+            )
+            if _event_should_end_session(event, policy):
+                session_should_end = True
+                end_reason = "haptic_release"
         total_haptic_events += len(emitted)
 
         for row in nback_timeline.finalize_until(now_ms, session_id=logger.session_id):
             logger.write_nback_event(row)
+        if session_should_end:
+            final_now_ms = now_ms
+            break
 
+        loop_end_ms = end_ms
+        if _haptic_sequence_active(scheduler, episode_state) and policy.finish_active_haptic_before_exit:
+            loop_end_ms = max(end_ms, now_ms + tick_interval)
         next_ms = _next_loop_time_ms(
             now_ms=now_ms,
-            end_ms=end_ms,
+            end_ms=loop_end_ms,
             tick_interval_ms=tick_interval,
             sample_list=sample_list,
             sample_index=sample_index,
@@ -234,12 +313,21 @@ def run_pinch_haptic_1back_core(
             scheduler=scheduler,
         )
         if next_ms is None:
+            end_reason = _end_reason_at_limit(
+                nback_timeline=nback_timeline,
+                now_ms=now_ms,
+                episode_state=episode_state,
+                policy=policy,
+            )
+            final_now_ms = now_ms
             break
         now_ms = next_ms
 
-    for row in nback_timeline.finalize_until(end_ms, session_id=logger.session_id):
+    if _haptic_sequence_active(scheduler, episode_state) and not policy.finish_active_haptic_before_exit:
+        episode_state.interrupted_haptic_trial = True
+    for row in nback_timeline.finalize_until(final_now_ms, session_id=logger.session_id):
         logger.write_nback_event(row)
-    zone_stats.finalize(end_ms)
+    zone_stats.finalize(final_now_ms)
     logger.write_nback_events([])
     haptic_sender.write_csv(logger.paths.haptic_events_csv)
     return PinchHaptic1BackCoreResult(
@@ -248,6 +336,14 @@ def run_pinch_haptic_1back_core(
         total_haptic_events=total_haptic_events,
         total_nback_trials=logger.total_nback_trials,
         total_nback_responses=logger.total_nback_responses,
+        session_should_end=session_should_end,
+        end_reason=end_reason,
+        haptic_episode_completed=episode_state.completed,
+        haptic_trial_count=episode_state.haptic_trial_count,
+        last_haptic_event_name=episode_state.last_haptic_event_name,
+        interrupted_haptic_trial=episode_state.interrupted_haptic_trial,
+        allow_multiple_haptic_trials=policy.allow_multiple_haptic_trials,
+        finish_active_haptic_before_exit=policy.finish_active_haptic_before_exit,
         **zone_stats.to_dict(),
     )
 
@@ -263,6 +359,8 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     haptic_config = _object_section(config, "haptic")
     sync_config = _object_section(config, "sync")
     haptic_debug_config = _haptic_debug_config_from_dualtask_config(config)
+    session_end_policy = _session_end_policy_from_config(session_config)
+    feedback_config = _haptic_feedback_display_from_dualtask_config(config)
 
     session_id = make_session_id(session_config.get("session_id_prefix", "pinch_haptic_1back"))
     logger = DualTaskLogger(
@@ -271,6 +369,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     )
     plan_path = Path(session_config.get("haptic_plan_config", "haptic_plan_config_example.yaml"))
     plan = load_haptic_plan_config(plan_path)
+    plan = _plan_with_global_haptic_defaults(plan, config.get("haptic_defaults"))
     parser = ManusOnlyPinchInput(
         ManusPinchInputConfig(
             thumb_node_id=pinch_config.get("thumb_node_id", 4),
@@ -310,6 +409,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     total_haptic_events = 0
     calibration: PinchCalibrationResult | None = None
     formal_result: PinchHaptic1BackCoreResult | None = None
+    end_reason = ""
     server = _make_manus_tcp_server(manus_config)
     manus_tcp_log_state = ManusTcpLogState()
     display: _NBackPygameDisplay | None = None
@@ -389,8 +489,12 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
             tcp_log_state=manus_tcp_log_state,
             haptic_debug_config=haptic_debug_config,
+            session_end_policy=session_end_policy,
+            haptic_feedback_display=feedback_config,
+            duration_s=float(session_config.get("duration_s", 60)),
         )
         total_haptic_events = formal_result.total_haptic_events
+        end_reason = formal_result.end_reason
     except Exception as exc:
         errors.append(str(exc))
         raise
@@ -424,8 +528,11 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         }
         summary.update(_calibration_summary_fields(calibration))
         summary.update(_zone_summary_fields(formal_result))
+        summary.update(_haptic_end_summary_fields(formal_result, session_end_policy, end_reason))
         if len(sender.records) == 0:
             _append_no_haptic_event_warnings(warnings, summary, plan)
+        if summary.get("interrupted_haptic_trial"):
+            warnings.append("haptic_sequence_interrupted")
         logger.write_summary(summary)
     print(f"Dual-task complete. Haptic events: {total_haptic_events}")
     return logger.session_dir
@@ -454,15 +561,25 @@ def _run_live_formal_phase(
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None = None,
     haptic_debug_config: HapticDebugConfig | None = None,
+    session_end_policy: SessionEndPolicy | None = None,
+    haptic_feedback_display: HapticFeedbackDisplayConfig | None = None,
+    duration_s: float = 60.0,
 ) -> PinchHaptic1BackCoreResult:
     scheduler = HapticTrialScheduler(plan, scheduler_config)
+    policy = session_end_policy or SessionEndPolicy()
+    feedback_config = haptic_feedback_display or HapticFeedbackDisplayConfig()
+    episode_state = HapticEpisodeState()
     latest_sample: PinchInputSample | None = None
     latest_zone = "invalid"
     previous_logged_zone = "invalid"
     total_haptic_events = 0
     zone_stats = ZoneRunStats()
     debug_config = haptic_debug_config or HapticDebugConfig()
-    nback_timeline.start(time.monotonic() * 1000.0)
+    start_ms = time.monotonic() * 1000.0
+    duration_deadline_ms = start_ms + max(0.0, float(duration_s)) * 1000.0
+    nback_timeline.start(start_ms)
+    end_reason = ""
+    final_now_ms = start_ms
 
     while True:
         now_ms = time.monotonic() * 1000.0
@@ -500,6 +617,8 @@ def _run_live_formal_phase(
         )
         for event in emitted:
             sender.record_scheduled_event(event)
+            episode_state.observe(event)
+            _print_haptic_feedback_if_needed(event, feedback_config)
         total_haptic_events += len(emitted)
 
         for row in nback_timeline.finalize_until(now_ms, session_id=session_id):
@@ -507,13 +626,26 @@ def _run_live_formal_phase(
         tick = nback_timeline.tick(now_ms)
         display.draw(tick)
 
-        if nback_timeline.is_complete(now_ms):
+        if any(_event_should_end_session(event, policy) for event in emitted):
+            end_reason = "haptic_release"
+            final_now_ms = now_ms
+            break
+        nback_complete = nback_timeline.is_complete(now_ms)
+        duration_elapsed = now_ms >= duration_deadline_ms
+        if nback_complete or duration_elapsed:
+            if _haptic_sequence_active(scheduler, episode_state) and policy.finish_active_haptic_before_exit:
+                display.tick(60)
+                continue
+            end_reason = "nback_complete" if nback_complete else "duration_elapsed"
+            if _haptic_sequence_active(scheduler, episode_state) and not policy.finish_active_haptic_before_exit:
+                episode_state.interrupted_haptic_trial = True
+            final_now_ms = now_ms
             break
         display.tick(60)
 
-    for row in nback_timeline.finalize_all(session_id=session_id):
+    for row in nback_timeline.finalize_until(final_now_ms, session_id=session_id):
         logger.write_nback_event(row)
-    zone_stats.finalize(time.monotonic() * 1000.0)
+    zone_stats.finalize(final_now_ms)
     sender.write_csv(logger.paths.haptic_events_csv)
     logger.write_nback_events([])
     return PinchHaptic1BackCoreResult(
@@ -522,6 +654,14 @@ def _run_live_formal_phase(
         total_haptic_events=total_haptic_events,
         total_nback_trials=logger.total_nback_trials,
         total_nback_responses=logger.total_nback_responses,
+        session_should_end=end_reason == "haptic_release",
+        end_reason=end_reason,
+        haptic_episode_completed=episode_state.completed,
+        haptic_trial_count=episode_state.haptic_trial_count,
+        last_haptic_event_name=episode_state.last_haptic_event_name,
+        interrupted_haptic_trial=episode_state.interrupted_haptic_trial,
+        allow_multiple_haptic_trials=policy.allow_multiple_haptic_trials,
+        finish_active_haptic_before_exit=policy.finish_active_haptic_before_exit,
         **zone_stats.to_dict(),
     )
 
@@ -652,6 +792,47 @@ def _haptic_debug_config_from_dualtask_config(config: dict[str, Any]) -> HapticD
     )
 
 
+def _session_end_policy_from_config(session_config: dict[str, Any]) -> SessionEndPolicy:
+    return SessionEndPolicy(
+        end_policy=str(session_config.get("end_policy", "stop_on_haptic_release")),
+        allow_multiple_haptic_trials=bool(session_config.get("allow_multiple_haptic_trials", False)),
+        finish_active_haptic_before_exit=bool(
+            session_config.get("finish_active_haptic_before_exit", True)
+        ),
+    )
+
+
+def _haptic_feedback_display_from_dualtask_config(
+    config: dict[str, Any],
+) -> HapticFeedbackDisplayConfig:
+    payload = config.get("haptic_feedback_display", {})
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ValueError("haptic_feedback_display section must be an object.")
+    mode = str(payload.get("mode", "none")).strip().lower()
+    if mode not in {"none", "console"}:
+        raise ValueError("haptic_feedback_display.mode must be none or console for this stage.")
+    return HapticFeedbackDisplayConfig(
+        mode=mode,
+        print_on_emit=bool(payload.get("print_on_emit", True)),
+    )
+
+
+def _plan_with_global_haptic_defaults(
+    plan: HapticPlanConfig,
+    payload: Any,
+) -> HapticPlanConfig:
+    if payload is None:
+        return plan
+    if not isinstance(payload, dict):
+        raise ValueError("haptic_defaults section must be an object.")
+    return replace(
+        plan,
+        haptic_defaults=haptic_defaults_from_dict(payload, timing=plan.timing),
+    )
+
+
 def _calibration_summary_fields(
     calibration: PinchCalibrationResult | None,
 ) -> dict[str, Any]:
@@ -687,6 +868,32 @@ def _zone_summary_fields(
     }
 
 
+def _haptic_end_summary_fields(
+    result: PinchHaptic1BackCoreResult | None,
+    policy: SessionEndPolicy,
+    end_reason: str = "",
+) -> dict[str, Any]:
+    if result is None:
+        return {
+            "end_reason": end_reason,
+            "haptic_episode_completed": False,
+            "haptic_trial_count": 0,
+            "last_haptic_event_name": "",
+            "interrupted_haptic_trial": False,
+            "allow_multiple_haptic_trials": policy.allow_multiple_haptic_trials,
+            "finish_active_haptic_before_exit": policy.finish_active_haptic_before_exit,
+        }
+    return {
+        "end_reason": result.end_reason or end_reason,
+        "haptic_episode_completed": result.haptic_episode_completed,
+        "haptic_trial_count": result.haptic_trial_count,
+        "last_haptic_event_name": result.last_haptic_event_name,
+        "interrupted_haptic_trial": result.interrupted_haptic_trial,
+        "allow_multiple_haptic_trials": result.allow_multiple_haptic_trials,
+        "finish_active_haptic_before_exit": result.finish_active_haptic_before_exit,
+    }
+
+
 def _append_no_haptic_event_warnings(
     warnings: list[str],
     summary: dict[str, Any],
@@ -709,8 +916,68 @@ def _append_no_haptic_event_warnings(
 
 def _min_contact_onset_delay_ms(plan: HapticPlanConfig) -> int:
     contact = plan.events[0]
-    delay_range = contact.onset_delay_ms or plan.timing.contact_onset_delay_ms
+    delay_range = contact.onset_delay_ms or plan.haptic_defaults.contact_onset_delay_ms
     return int(delay_range[0])
+
+
+def _event_should_end_session(event: Any, policy: SessionEndPolicy) -> bool:
+    return (
+        policy.end_policy == "stop_on_haptic_release"
+        and not policy.allow_multiple_haptic_trials
+        and str(getattr(event, "event_name", "")) == "release"
+    )
+
+
+def _haptic_sequence_active(
+    scheduler: HapticTrialScheduler,
+    episode_state: HapticEpisodeState,
+) -> bool:
+    return bool(
+        episode_state.active
+        or getattr(scheduler, "state", "")
+        in {"PENDING_CONTACT", "WAIT_CLOSED_ZONE", "PENDING_PLAN_EVENT"}
+    )
+
+
+def _end_reason_at_limit(
+    *,
+    nback_timeline: NBackTimeline,
+    now_ms: float,
+    episode_state: HapticEpisodeState,
+    policy: SessionEndPolicy,
+) -> str:
+    if episode_state.active and not policy.finish_active_haptic_before_exit:
+        episode_state.interrupted_haptic_trial = True
+    if nback_timeline.is_complete(now_ms):
+        return "nback_complete"
+    return "duration_elapsed"
+
+
+def _print_haptic_feedback_if_needed(
+    event: Any,
+    config: HapticFeedbackDisplayConfig,
+    *,
+    print_fn: Any = print,
+) -> None:
+    if config.mode != "console" or not config.print_on_emit:
+        return
+    trial_index = getattr(event, "haptic_trial_index", 0)
+    event_name = getattr(event, "event_name", "")
+    modality = getattr(event, "modality", "")
+    duration_ms = getattr(event, "duration_ms", None)
+    if modality == "matrix":
+        channels = list(getattr(event, "channel_list", ()) or ())
+        print_fn(
+            f"[HAPTIC] trial={trial_index} event={event_name} "
+            f"modality={modality} channels={channels}"
+        )
+    else:
+        print_fn(
+            f"[HAPTIC] trial={trial_index} event={event_name} "
+            f"modality={modality} duration={duration_ms}ms"
+        )
+    if event_name == "release":
+        print_fn("[HAPTIC] release emitted; ending dual-task session.")
 
 
 def _print_scheduler_debug(
