@@ -45,17 +45,17 @@ vibration_tcp:
 matrix_tcp:
   enabled: false
   required: false
-  host: 192.168.x.y
+  host: 192.168.1.9
   port: 12345
   connect_timeout_s: 2.0
   send_timeout_s: 0.2
 
 haptic_defaults:
   vibration_duration_ms: [150, 300]
-  matrix_duration_ms: [500, 1000]
-  inter_event_gap_ms: [500, 1000]
-  contact_onset_delay_ms: [500, 2000]
-  release_duration_ms: [300, 500]
+  matrix_duration_ms: [1000, 2000]
+  inter_event_gap_ms: [5000, 10000]
+  contact_onset_delay_ms: [5000, 20000]
+  release_duration_ms: [3000, 5000]
 
 haptic_feedback_display:
   mode: console
