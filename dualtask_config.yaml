@@ -28,16 +28,16 @@ calibration:
   min_distance_range_ratio: 0.15
 
 haptic:
-  vibration_enabled: false
+  vibration_enabled: true
   matrix_enabled: false
   visual_text_cue_enabled: false
   max_queue_size: 128
   matrix_latest_only: true
 
 vibration_tcp:
-  enabled: false
+  enabled: true
   required: false
-  host: 192.168.x.y
+  host: 192.168.1.22
   port: 12346
   connect_timeout_s: 2.0
   send_timeout_s: 0.2
@@ -53,9 +53,9 @@ matrix_tcp:
 haptic_defaults:
   vibration_duration_ms: [150, 300]
   matrix_duration_ms: [500, 1000]
-  inter_event_gap_ms: [300, 1000]
+  inter_event_gap_ms: [500, 1000]
   contact_onset_delay_ms: [500, 2000]
-  release_duration_ms: [150, 300]
+  release_duration_ms: [300, 500]
 
 haptic_feedback_display:
   mode: console
