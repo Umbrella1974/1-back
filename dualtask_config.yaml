@@ -22,7 +22,7 @@ pinch:
   target_finger_node_id: 14
 
 wrist_rotation:
-  enabled: false
+  enabled: true
   node_id: 0
   quaternion_order: wxyz
   calibration_duration_s: 3.0
