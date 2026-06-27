@@ -550,6 +550,13 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                     "wrist_rotation_calibration_failed:"
                     + str(wrist_calibration.failure_reason)
                 )
+                if wrist_rotation_config.required:
+                    raise RuntimeError(
+                        "wrist_rotation_calibration_failed:"
+                        + str(wrist_calibration.failure_reason)
+                    )
+        else:
+            print("[WRIST] calibration disabled")
 
         display = _NBackPygameDisplay()
         display.show_text_and_wait(
@@ -627,6 +634,13 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                     if wrist_rotation_config.enabled
                     else ""
                 ),
+                "wrist_rotation_calibration_json": (
+                    str(logger.paths.wrist_rotation_calibration_json)
+                    if wrist_rotation_config.enabled
+                    else ""
+                ),
+                "wrist_rotation_valid_samples": logger.total_wrist_rotation_valid_samples,
+                "wrist_rotation_invalid_samples": logger.total_wrist_rotation_invalid_samples,
                 "warnings": warnings,
                 "errors": errors,
         }
@@ -637,6 +651,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             _append_no_haptic_event_warnings(warnings, summary, plan)
         if summary.get("interrupted_haptic_trial"):
             warnings.append("haptic_sequence_interrupted")
+        logger.close_wrist_rotation_writer()
         logger.write_summary(summary)
     print(f"Dual-task complete. Haptic events: {total_haptic_events}")
     return logger.session_dir
@@ -660,6 +675,7 @@ def _run_live_wrist_rotation_calibration(
     tcp_log_state: ManusTcpLogState | None = None,
 ) -> WristRotationCalibrationResult:
     input("Wrist neutral calibration: press Enter, then keep wrist neutral...")
+    print("[WRIST] neutral calibration collecting...")
     neutral = _collect_live_wrist_quaternions(
         server,
         logger,
@@ -669,6 +685,7 @@ def _run_live_wrist_rotation_calibration(
         tcp_log_state=tcp_log_state,
     )
     input("Wrist left calibration: press Enter, then rotate wrist left...")
+    print("[WRIST] left calibration collecting...")
     left = _collect_live_wrist_quaternions(
         server,
         logger,
@@ -678,6 +695,7 @@ def _run_live_wrist_rotation_calibration(
         tcp_log_state=tcp_log_state,
     )
     input("Wrist right calibration: press Enter, then rotate wrist right...")
+    print("[WRIST] right calibration collecting...")
     right = _collect_live_wrist_quaternions(
         server,
         logger,
@@ -693,9 +711,11 @@ def _run_live_wrist_rotation_calibration(
         config=config,
     )
     if result.calibration_passed:
-        print(f"Wrist rotation calibration passed: threshold={result.threshold:.6f}")
+        print(f"[WRIST] calibration passed: threshold={result.threshold:.6f}")
     else:
-        print(f"Wrist rotation calibration failed: {result.failure_reason}")
+        print(f"[WRIST] calibration failed: {result.failure_reason}")
+    if config.save_timeseries:
+        print(f"[WRIST] writing {logger.paths.wrist_rotation_timeseries_csv.name}")
     return result
 
 

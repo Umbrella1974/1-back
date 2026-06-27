@@ -18,6 +18,7 @@ from wrist_rotation import (
     normalize_quaternion,
     quaternion_angle,
     relative_quaternion,
+    wrist_rotation_config_from_dict,
 )
 
 
@@ -135,6 +136,30 @@ def test_wrist_logger_writes_calibration_json(tmp_path) -> None:
     logger.write_wrist_rotation_calibration(calibration)
 
     assert logger.paths.wrist_rotation_calibration_json.exists()
+
+
+def test_wrist_rotation_config_parses_required_flag() -> None:
+    config = wrist_rotation_config_from_dict({"enabled": True, "required": True})
+
+    assert config.enabled is True
+    assert config.required is True
+
+
+def test_wrist_logger_counts_valid_and_invalid_samples(tmp_path) -> None:
+    logger = DualTaskLogger(session_id="wrist-counts", output_root=tmp_path)
+    calibration = calibrate_wrist_rotation(
+        [(1.0, 0.0, 0.0, 0.0), (-1.0, 0.0, 0.0, 0.0)],
+        [_axis_angle_z(20.0), _axis_angle_z(25.0)],
+        [_axis_angle_z(-20.0), _axis_angle_z(-25.0)],
+        config=WristRotationConfig(min_valid_frames=2),
+    )
+
+    logger.write_wrist_rotation_sample(classify_wrist_rotation(_axis_angle_z(30.0), calibration))
+    logger.write_wrist_rotation_sample(classify_wrist_rotation_frame({}, calibration))
+    logger.close_wrist_rotation_writer()
+
+    assert logger.total_wrist_rotation_valid_samples == 1
+    assert logger.total_wrist_rotation_invalid_samples == 1
 
 
 def _axis_angle_z(degrees: float):

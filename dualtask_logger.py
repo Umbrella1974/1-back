@@ -108,6 +108,8 @@ class DualTaskLogger:
         self.total_valid_pinch_samples = 0
         self.total_nback_trials = 0
         self.total_nback_responses = 0
+        self.total_wrist_rotation_valid_samples = 0
+        self.total_wrist_rotation_invalid_samples = 0
         self._pinch_header_written = False
         self._nback_header_written = False
         self._wrist_rotation_header_written = False
@@ -232,6 +234,15 @@ class DualTaskLogger:
             writer.writerow(
                 {field: row.get(field, "") for field in WRIST_ROTATION_TIMESERIES_FIELDS}
             )
+        if bool(row.get("wrist_rotation_valid", False)):
+            self.total_wrist_rotation_valid_samples += 1
+        else:
+            self.total_wrist_rotation_invalid_samples += 1
+
+    def close_wrist_rotation_writer(self) -> None:
+        """Placeholder for API symmetry; wrist rows are written eagerly."""
+
+        return None
 
     def write_summary(self, summary: dict[str, Any]) -> None:
         """Write summary.json."""
@@ -244,6 +255,14 @@ class DualTaskLogger:
         payload.setdefault("total_valid_pinch_samples", self.total_valid_pinch_samples)
         payload.setdefault("total_nback_trials", self.total_nback_trials)
         payload.setdefault("total_nback_responses", self.total_nback_responses)
+        payload.setdefault(
+            "wrist_rotation_valid_samples",
+            self.total_wrist_rotation_valid_samples,
+        )
+        payload.setdefault(
+            "wrist_rotation_invalid_samples",
+            self.total_wrist_rotation_invalid_samples,
+        )
         self.paths.summary_json.write_text(
             json.dumps(_json_safe(payload), indent=2, ensure_ascii=False, sort_keys=True),
             encoding="utf-8",

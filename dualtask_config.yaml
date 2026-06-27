@@ -33,6 +33,7 @@ wrist_rotation:
   right_label: right
   classification_margin: 0.15
   save_timeseries: true
+  required: false
 
 calibration:
   open_hand_duration_s: 3.0

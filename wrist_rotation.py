@@ -26,6 +26,7 @@ class WristRotationConfig:
     right_label: str = "right"
     classification_margin: float = 0.15
     save_timeseries: bool = True
+    required: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -48,6 +49,8 @@ class WristRotationConfig:
         object.__setattr__(self, "classification_margin", margin)
         if not isinstance(self.save_timeseries, bool):
             raise ValueError("wrist_rotation.save_timeseries must be true or false.")
+        if not isinstance(self.required, bool):
+            raise ValueError("wrist_rotation.required must be true or false.")
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,7 @@ def wrist_rotation_config_from_dict(payload: dict[str, Any] | None) -> WristRota
         right_label=str(value.get("right_label", "right")),
         classification_margin=value.get("classification_margin", 0.15),
         save_timeseries=bool(value.get("save_timeseries", True)),
+        required=bool(value.get("required", False)),
     )
 
 
