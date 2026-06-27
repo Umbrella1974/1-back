@@ -35,6 +35,8 @@ class HapticPlanEvent:
     duration_ms_range: tuple[int, int] | None = None
     command_label: str | None = None
     command_id: int | None = None
+    end_command_label: str | None = None
+    end_command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     payload: dict[str, Any] | None = None
     onset_delay_ms: tuple[int, int] | None = None
@@ -210,6 +212,8 @@ def _parse_event(
         "modality",
         "command_label",
         "command_id",
+        "end_command_label",
+        "end_command_id",
         "duration_ms",
         "duration_ms_range",
         "trigger_zone",
@@ -256,6 +260,12 @@ def _parse_event(
         if payload.get("command_id") is not None
         else None
     )
+    end_command_label = _optional_str(payload.get("end_command_label"))
+    end_command_id = (
+        _positive_int(payload.get("end_command_id"), f"{name_prefix}.end_command_id")
+        if payload.get("end_command_id") is not None
+        else None
+    )
     channel_list = _channel_list(payload.get("channel_list", ()), f"{name_prefix}.channel_list")
     event_payload = _optional_mapping(payload.get("payload"), f"{name_prefix}.payload")
     onset_delay_ms = (
@@ -278,6 +288,8 @@ def _parse_event(
         raise ValueError(f"{name_prefix} vibration event requires command_label or command_id.")
     if modality == "matrix" and not channel_list and event_payload is None:
         raise ValueError(f"{name_prefix} matrix event requires non-empty channel_list or payload.")
+    if modality == "matrix" and (end_command_label is not None or end_command_id is not None):
+        raise ValueError(f"{name_prefix} matrix event cannot use end_command_id.")
     if event_name == "contact" and onset_gap_after_previous_ms is not None:
         raise ValueError(f"{name_prefix}.contact cannot use onset_gap_after_previous_ms.")
     if event_name != "contact" and onset_delay_ms is not None:
@@ -292,6 +304,8 @@ def _parse_event(
         duration_ms_range=duration_ms_range,
         command_label=command_label,
         command_id=command_id,
+        end_command_label=end_command_label,
+        end_command_id=end_command_id,
         channel_list=channel_list,
         payload=event_payload,
         onset_delay_ms=onset_delay_ms,

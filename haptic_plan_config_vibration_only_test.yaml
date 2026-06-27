@@ -1,0 +1,43 @@
+plan_id: vibration_only_test
+description: contact-slip-release with explicit slip end command
+random_seed: 123
+
+timing:
+  contact_onset_delay_ms: [1500, 3000]
+  inter_event_gap_ms: [5000, 10000]
+  refractory_ms: 3000
+
+events:
+  - name: contact
+    modality: vibration
+    command_label: contact_enter
+    command_id: 1
+    duration_ms: 500
+    trigger_zone: open_zone
+    onset_delay_ms: [1500, 3000]
+
+  - name: slip
+    modality: vibration
+    command_label: slip_start
+    command_id: 3
+    end_command_label: slip_end
+    end_command_id: 4
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    onset_gap_after_previous_ms: [5000, 10000]
+
+  - name: release
+    modality: vibration
+    command_label: contact_exit
+    command_id: 2
+    duration_ms: 1500
+    trigger_zone: closed_zone
+    onset_gap_after_previous_ms: [5000, 10000]
+
+zones:
+  open_zone:
+    lower: auto_a
+    upper: auto_max
+  closed_zone:
+    lower: auto_min
+    upper: auto_a

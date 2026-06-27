@@ -207,6 +207,57 @@ def test_enabled_vibration_sender_queues_vendor_tcp_payload(tmp_path) -> None:
     assert record.send_status == "sent"
 
 
+def test_vibration_end_command_is_polled_when_due(tmp_path) -> None:
+    sent_payloads: list[bytes] = []
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=True,
+            disabled_mode=False,
+            vibration_tcp_enabled=True,
+            vibration_socket_factory=_socket_factory(sent_payloads),
+        ),
+        session_id="tcp-end",
+        wall_time_fn=lambda: 0.0,
+    )
+    scheduled = SimpleNamespace(
+        haptic_trial_index=0,
+        event_index=1,
+        event_name="slip",
+        modality="vibration",
+        command_label="slip_start",
+        command_id=3,
+        end_command_label="slip_end",
+        end_command_id=4,
+        duration_ms=1000,
+        sampled_duration_ms=1000,
+        event_end_monotonic_ms=2000.0,
+        trigger_zone="closed_zone",
+        actual_zone_at_emit="closed_zone",
+        trigger_pinch_distance=0.02,
+        trigger_frame_index=10,
+        actual_emit_monotonic_ms=1000.0,
+        original_planned_onset_ms=1000.0,
+        adjusted_onset_ms=1000.0,
+        nearest_digit_onset_ms=None,
+        digit_onset_delta_ms=None,
+        onset_was_delayed=False,
+        sync_warning="",
+    )
+
+    start_record = sender.record_scheduled_event(scheduled)
+    assert sender.poll_due_control_commands(1999.0) == []
+    end_records = sender.poll_due_control_commands(2000.0)
+    sender.write_csv(tmp_path / "haptic_events.csv")
+
+    assert sent_payloads == [b"3\n", b"4\n"]
+    assert len(end_records) == 1
+    assert end_records[0].event_name == "slip_end"
+    assert end_records[0].source_event_name == "slip"
+    assert end_records[0].actual_duration_ms == 1000.0
+    assert start_record.end_command_sent is True
+    assert start_record.actual_duration_ms == 1000.0
+
+
 def test_enabled_matrix_sender_queues_vendor_tcp_packet(tmp_path) -> None:
     sent_payloads: list[bytes] = []
 

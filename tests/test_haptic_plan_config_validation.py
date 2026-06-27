@@ -199,6 +199,27 @@ def test_to_dict_round_trips_timing_and_event_ranges() -> None:
     assert second.to_dict() == first.to_dict()
 
 
+def test_vibration_end_command_round_trips() -> None:
+    payload = _valid_plan()
+    payload["events"][1]["end_command_label"] = "slip_end"
+    payload["events"][1]["end_command_id"] = 4
+
+    plan = haptic_plan_config_from_dict(payload)
+    second = haptic_plan_config_from_dict(plan.to_dict())
+
+    assert second.events[1].end_command_label == "slip_end"
+    assert second.events[1].end_command_id == 4
+    assert second.to_dict()["events"][1]["end_command_id"] == 4
+
+
+def test_matrix_event_rejects_end_command_id() -> None:
+    payload = _valid_plan()
+    payload["events"][2]["end_command_id"] = 4
+
+    with pytest.raises(ValueError, match="matrix event cannot use end_command_id"):
+        haptic_plan_config_from_dict(payload)
+
+
 def test_scheduler_timing_schema_can_omit_onset_policy() -> None:
     plan = haptic_plan_config_from_dict(
         {

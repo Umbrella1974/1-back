@@ -75,6 +75,8 @@ class ScheduledHapticEvent:
     modality: str
     command_label: str | None
     command_id: int | None
+    end_command_label: str | None = None
+    end_command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     duration_ms: int = 0
     sampled_duration_ms: int | None = None
@@ -84,6 +86,7 @@ class ScheduledHapticEvent:
     trigger_pinch_distance: float | None = None
     trigger_frame_index: int | None = None
     actual_emit_monotonic_ms: float | None = None
+    event_end_monotonic_ms: float | None = None
     original_planned_onset_ms: float = 0.0
     adjusted_onset_ms: float = 0.0
     nearest_digit_onset_ms: float | None = None
@@ -367,6 +370,8 @@ class HapticTrialScheduler:
             modality=event.modality,
             command_label=event.command_label,
             command_id=event.command_id,
+            end_command_label=event.end_command_label,
+            end_command_id=event.end_command_id,
             channel_list=event.channel_list,
             duration_ms=pending.sampled_duration_ms,
             sampled_duration_ms=pending.sampled_duration_ms,
@@ -378,6 +383,7 @@ class HapticTrialScheduler:
             ),
             trigger_frame_index=int(frame_index) if frame_index is not None else None,
             actual_emit_monotonic_ms=float(actual_emit_ms),
+            event_end_monotonic_ms=float(actual_emit_ms) + float(pending.sampled_duration_ms),
             original_planned_onset_ms=adjustment.original_planned_onset_ms,
             adjusted_onset_ms=adjustment.adjusted_onset_ms,
             nearest_digit_onset_ms=adjustment.nearest_digit_onset_ms,

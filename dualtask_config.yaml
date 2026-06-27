@@ -8,6 +8,8 @@ session:
   end_policy: stop_on_haptic_release
   allow_multiple_haptic_trials: false
   finish_active_haptic_before_exit: true
+  post_release_recording_ms: 3000
+  post_release_continue_nback: false
 
 manus:
   tcp_host: 127.0.0.1

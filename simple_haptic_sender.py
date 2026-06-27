@@ -36,6 +36,14 @@ HAPTIC_EVENT_FIELDS = [
     "channel_list",
     "duration_ms",
     "sampled_duration_ms",
+    "event_end_monotonic_ms",
+    "end_command_label",
+    "end_command_id",
+    "end_command_due_ms",
+    "end_command_sent",
+    "end_command_tcp_success",
+    "actual_duration_ms",
+    "source_event_name",
     "global_default_used",
     "trigger_zone",
     "actual_zone_at_emit",
@@ -63,6 +71,18 @@ HAPTIC_EVENT_FIELDS = [
     "haptic_episode_completed",
     "note",
 ]
+
+
+@dataclass
+class PendingVibrationEndCommand:
+    due_monotonic_ms: float
+    source_event_name: str
+    command_label: str | None
+    command_id: int
+    haptic_trial_index: int
+    event_index: int
+    source_emit_monotonic_ms: float
+    source_record: "HapticEventRecord | None" = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +156,14 @@ class HapticEventRecord:
     channel_list: list[int] = field(default_factory=list)
     duration_ms: int | None = None
     sampled_duration_ms: int | None = None
+    event_end_monotonic_ms: float | None = None
+    end_command_label: str | None = None
+    end_command_id: int | None = None
+    end_command_due_ms: float | None = None
+    end_command_sent: bool = False
+    end_command_tcp_success: bool | None = None
+    actual_duration_ms: float | None = None
+    source_event_name: str = ""
     global_default_used: bool = False
     trigger_zone: str | None = None
     actual_zone_at_emit: str | None = None
@@ -209,6 +237,7 @@ class SimpleHapticSender:
         self._vibration_worker: VibrationTcpLineWorker | None = None
         self._matrix_worker: MatrixTcpWorker | None = None
         self._connect_warnings: list[str] = []
+        self._pending_end_commands: list[PendingVibrationEndCommand] = []
         self._start_tcp_workers()
 
     def send_contact(self, **kwargs: Any) -> HapticEventRecord:
@@ -240,6 +269,10 @@ class SimpleHapticSender:
             command_id=getattr(scheduled, "command_id", None),
             duration_ms=getattr(scheduled, "duration_ms", None),
             sampled_duration_ms=getattr(scheduled, "sampled_duration_ms", None),
+            event_end_monotonic_ms=getattr(scheduled, "event_end_monotonic_ms", None),
+            end_command_label=getattr(scheduled, "end_command_label", None),
+            end_command_id=getattr(scheduled, "end_command_id", None),
+            end_command_due_ms=getattr(scheduled, "event_end_monotonic_ms", None),
             global_default_used=getattr(scheduled, "global_default_used", False),
             trigger_zone=getattr(scheduled, "trigger_zone", None),
             actual_zone_at_emit=getattr(scheduled, "actual_zone_at_emit", None),
@@ -263,11 +296,17 @@ class SimpleHapticSender:
             haptic_episode_completed=getattr(scheduled, "haptic_episode_completed", False),
         )
         if event_name == "contact":
-            return self.send_contact(**kwargs)
+            record = self.send_contact(**kwargs)
+            self._schedule_vibration_end_command(scheduled, record)
+            return record
         if event_name == "release":
-            return self.send_release(**kwargs)
+            record = self.send_release(**kwargs)
+            self._schedule_vibration_end_command(scheduled, record)
+            return record
         if event_name == "slip":
-            return self.send_slip(**kwargs)
+            record = self.send_slip(**kwargs)
+            self._schedule_vibration_end_command(scheduled, record)
+            return record
         if event_name == "left":
             return self.send_matrix_left(
                 list(getattr(scheduled, "channel_list", ()) or ()),
@@ -280,7 +319,9 @@ class SimpleHapticSender:
             )
         modality = str(getattr(scheduled, "modality", ""))
         if modality == "vibration":
-            return self._record_event(event_name, "vibration", **kwargs)
+            record = self._record_event(event_name, "vibration", **kwargs)
+            self._schedule_vibration_end_command(scheduled, record)
+            return record
         if modality == "matrix":
             return self._record_event(
                 event_name,
@@ -301,10 +342,54 @@ class SimpleHapticSender:
             channel_list=list(getattr(event, "channel_list", ()) or ()),
             duration_ms=getattr(event, "duration_ms", None),
             trigger_zone=getattr(event, "trigger_zone", None),
+            end_command_label=getattr(event, "end_command_label", None),
+            end_command_id=getattr(event, "end_command_id", None),
             **kwargs,
         )
 
+    def poll_due_control_commands(self, now_ms: float) -> list[HapticEventRecord]:
+        """Send pending vibration end commands whose due time has passed."""
+
+        now = float(now_ms)
+        due: list[PendingVibrationEndCommand] = []
+        pending: list[PendingVibrationEndCommand] = []
+        for command in self._pending_end_commands:
+            if command.due_monotonic_ms <= now:
+                due.append(command)
+            else:
+                pending.append(command)
+        self._pending_end_commands = pending
+
+        records: list[HapticEventRecord] = []
+        for command in due:
+            record = self._record_event(
+                f"{command.source_event_name}_end",
+                "vibration",
+                haptic_trial_index=command.haptic_trial_index,
+                event_index=command.event_index,
+                command_label=command.command_label,
+                command_id=command.command_id,
+                monotonic_ms=now,
+                source_event_name=command.source_event_name,
+                end_command_due_ms=command.due_monotonic_ms,
+                note="vibration_end_command",
+            )
+            record.actual_duration_ms = max(0.0, float(record.monotonic_ms) - command.source_emit_monotonic_ms)
+            if command.source_record is not None:
+                command.source_record.end_command_sent = True
+                command.source_record.end_command_tcp_success = record.tcp_success
+                command.source_record.actual_duration_ms = record.actual_duration_ms
+            print(
+                "[HAPTIC] "
+                f"end_command source={command.source_event_name} "
+                f"command_id={command.command_id} "
+                f"tcp={'queued' if record.tcp_queued else record.send_status}"
+            )
+            records.append(record)
+        return records
+
     def write_csv(self, path: str | Path) -> Path:
+        self.poll_due_control_commands(float("inf"))
         self.close()
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -336,6 +421,14 @@ class SimpleHapticSender:
         channel_list: list[int] | tuple[int, ...] | None = None,
         duration_ms: int | None = None,
         sampled_duration_ms: int | None = None,
+        event_end_monotonic_ms: float | None = None,
+        end_command_label: str | None = None,
+        end_command_id: int | None = None,
+        end_command_due_ms: float | None = None,
+        end_command_sent: bool = False,
+        end_command_tcp_success: bool | None = None,
+        actual_duration_ms: float | None = None,
+        source_event_name: str = "",
         global_default_used: bool = False,
         trigger_zone: str | None = None,
         actual_zone_at_emit: str | None = None,
@@ -399,6 +492,20 @@ class SimpleHapticSender:
             sampled_duration_ms=(
                 int(sampled_duration_ms) if sampled_duration_ms is not None else None
             ),
+            event_end_monotonic_ms=(
+                float(event_end_monotonic_ms) if event_end_monotonic_ms is not None else None
+            ),
+            end_command_label=end_command_label,
+            end_command_id=int(end_command_id) if end_command_id is not None else None,
+            end_command_due_ms=(
+                float(end_command_due_ms) if end_command_due_ms is not None else None
+            ),
+            end_command_sent=bool(end_command_sent),
+            end_command_tcp_success=end_command_tcp_success,
+            actual_duration_ms=(
+                float(actual_duration_ms) if actual_duration_ms is not None else None
+            ),
+            source_event_name=str(source_event_name or ""),
             global_default_used=bool(global_default_used),
             trigger_zone=trigger_zone,
             actual_zone_at_emit=actual_zone_at_emit,
@@ -518,6 +625,33 @@ class SimpleHapticSender:
         if modality == "matrix":
             return bool(self.config.matrix_tcp_enabled)
         return False
+
+    def _schedule_vibration_end_command(
+        self,
+        scheduled: Any,
+        record: HapticEventRecord,
+    ) -> None:
+        if str(getattr(scheduled, "modality", "")) != "vibration":
+            return
+        end_command_id = getattr(scheduled, "end_command_id", None)
+        if end_command_id is None:
+            return
+        due_ms = getattr(scheduled, "event_end_monotonic_ms", None)
+        if due_ms is None:
+            due_ms = float(record.monotonic_ms) + float(record.sampled_duration_ms or record.duration_ms or 0)
+        record.end_command_due_ms = float(due_ms)
+        self._pending_end_commands.append(
+            PendingVibrationEndCommand(
+                due_monotonic_ms=float(due_ms),
+                source_event_name=str(getattr(scheduled, "event_name", record.event_name)),
+                command_label=getattr(scheduled, "end_command_label", None),
+                command_id=int(end_command_id),
+                haptic_trial_index=int(getattr(scheduled, "haptic_trial_index", record.haptic_trial_index)),
+                event_index=int(getattr(scheduled, "event_index", record.event_index)),
+                source_emit_monotonic_ms=float(record.monotonic_ms),
+                source_record=record,
+            )
+        )
 
 
 def _validate_channel_list(channels: list[int] | tuple[int, ...]) -> list[int]:

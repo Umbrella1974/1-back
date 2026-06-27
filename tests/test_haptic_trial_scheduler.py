@@ -159,6 +159,25 @@ def test_scheduler_state_machine_runs_plan_after_delays() -> None:
     assert next_contact.haptic_trial_index == 1
 
 
+def test_scheduler_carries_vibration_end_command_metadata() -> None:
+    payload = _plan(contact_delay=[0, 0], event_gap=[0, 0]).to_dict()
+    payload["events"][1]["end_command_label"] = "slip_end"
+    payload["events"][1]["end_command_id"] = 4
+    payload["events"][1]["duration_ms"] = 1000
+    scheduler = HapticTrialScheduler(haptic_plan_config_from_dict(payload))
+
+    scheduler.update(zone="open_zone", now_ms=0.0)
+    contact = scheduler.update(zone="open_zone", now_ms=0.0)[0]
+    assert contact.event_name == "contact"
+    scheduler.update(zone="closed_zone", now_ms=0.0)
+    slip = scheduler.update(zone="closed_zone", now_ms=1.0)[0]
+
+    assert slip.event_name == "slip"
+    assert slip.end_command_label == "slip_end"
+    assert slip.end_command_id == 4
+    assert slip.event_end_monotonic_ms == slip.actual_emit_monotonic_ms + 1000
+
+
 def test_pending_contact_is_cancelled_when_hand_leaves_open_zone() -> None:
     scheduler = HapticTrialScheduler(_plan())
 

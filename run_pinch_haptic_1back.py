@@ -67,6 +67,8 @@ class SessionEndPolicy:
     end_policy: str = "stop_on_haptic_release"
     allow_multiple_haptic_trials: bool = False
     finish_active_haptic_before_exit: bool = True
+    post_release_recording_ms: float = 0.0
+    post_release_continue_nback: bool = False
 
 
 @dataclass(frozen=True)
@@ -182,6 +184,11 @@ class PinchHaptic1BackCoreResult:
     interrupted_haptic_trial: bool = False
     allow_multiple_haptic_trials: bool = True
     finish_active_haptic_before_exit: bool = True
+    post_release_recording_ms: float = 0.0
+    post_release_continue_nback: bool = False
+    post_release_started_ms: float | None = None
+    post_release_end_ms: float | None = None
+    post_release_pinch_samples: int = 0
 
 
 def run_pinch_haptic_1back_core(
@@ -246,6 +253,9 @@ def run_pinch_haptic_1back_core(
     session_should_end = False
     end_reason = ""
     final_now_ms = end_ms
+    post_release_started_ms: float | None = None
+    post_release_end_ms: float | None = None
+    post_release_pinch_samples = 0
 
     while True:
         while (
@@ -259,26 +269,32 @@ def run_pinch_haptic_1back_core(
             )
             zone_stats.update(latest_zone, float(getattr(latest_sample, "monotonic_ms")))
             logger.write_pinch_sample(latest_sample, calibration=calibration, zone=latest_zone)
+            if post_release_started_ms is not None:
+                post_release_pinch_samples += 1
             sample_index += 1
 
-        while (
-            response_index < len(response_list)
-            and _response_time_ms(response_list[response_index]) <= now_ms + 1e-9
-        ):
-            response = response_list[response_index]
-            nback_timeline.record_response(
-                _response_key_name(response),
-                _response_time_ms(response),
-            )
-            response_index += 1
+        nback_active = post_release_started_ms is None or policy.post_release_continue_nback
+        if nback_active:
+            while (
+                response_index < len(response_list)
+                and _response_time_ms(response_list[response_index]) <= now_ms + 1e-9
+            ):
+                response = response_list[response_index]
+                nback_timeline.record_response(
+                    _response_key_name(response),
+                    _response_time_ms(response),
+                )
+                response_index += 1
 
-        emitted = _advance_scheduler_for_current_state(
-            scheduler,
-            zone=latest_zone,
-            now_ms=now_ms,
-            latest_sample=latest_sample,
-            digit_onsets_ms=nback_timeline.digit_onsets_ms,
-        )
+        emitted: list[Any] = []
+        if post_release_started_ms is None:
+            emitted = _advance_scheduler_for_current_state(
+                scheduler,
+                zone=latest_zone,
+                now_ms=now_ms,
+                latest_sample=latest_sample,
+                digit_onsets_ms=nback_timeline.digit_onsets_ms,
+            )
         for event in emitted:
             haptic_sender.record_scheduled_event(event)
             episode_state.observe(event)
@@ -289,14 +305,27 @@ def run_pinch_haptic_1back_core(
             )
             if _event_should_end_session(event, policy):
                 session_should_end = True
-                end_reason = "haptic_release"
+                post_release_started_ms = now_ms
+                post_release_end_ms = now_ms + float(getattr(event, "duration_ms", 0) or 0) + policy.post_release_recording_ms
+                end_reason = "haptic_release_post_recording"
         total_haptic_events += len(emitted)
+        haptic_sender.poll_due_control_commands(now_ms)
 
-        for row in nback_timeline.finalize_until(now_ms, session_id=logger.session_id):
-            logger.write_nback_event(row)
-        if session_should_end:
+        if nback_active:
+            for row in nback_timeline.finalize_until(now_ms, session_id=logger.session_id):
+                logger.write_nback_event(row)
+        if post_release_end_ms is not None and now_ms >= post_release_end_ms:
             final_now_ms = now_ms
+            end_reason = "haptic_release_post_recording_complete"
             break
+
+        if post_release_end_ms is not None:
+            future_sample_ms = _next_sample_time_ms(sample_list, sample_index)
+            next_candidates = [now_ms + tick_interval, post_release_end_ms]
+            if future_sample_ms is not None:
+                next_candidates.append(future_sample_ms)
+            now_ms = min(value for value in next_candidates if value > now_ms + 1e-9)
+            continue
 
         loop_end_ms = end_ms
         if _haptic_sequence_active(scheduler, episode_state) and policy.finish_active_haptic_before_exit:
@@ -325,8 +354,14 @@ def run_pinch_haptic_1back_core(
 
     if _haptic_sequence_active(scheduler, episode_state) and not policy.finish_active_haptic_before_exit:
         episode_state.interrupted_haptic_trial = True
-    for row in nback_timeline.finalize_until(final_now_ms, session_id=logger.session_id):
+    final_nback_ms = (
+        final_now_ms
+        if post_release_started_ms is None or policy.post_release_continue_nback
+        else post_release_started_ms
+    )
+    for row in nback_timeline.finalize_until(final_nback_ms, session_id=logger.session_id):
         logger.write_nback_event(row)
+    haptic_sender.poll_due_control_commands(final_now_ms)
     zone_stats.finalize(final_now_ms)
     logger.write_nback_events([])
     haptic_sender.write_csv(logger.paths.haptic_events_csv)
@@ -344,6 +379,11 @@ def run_pinch_haptic_1back_core(
         interrupted_haptic_trial=episode_state.interrupted_haptic_trial,
         allow_multiple_haptic_trials=policy.allow_multiple_haptic_trials,
         finish_active_haptic_before_exit=policy.finish_active_haptic_before_exit,
+        post_release_recording_ms=policy.post_release_recording_ms,
+        post_release_continue_nback=policy.post_release_continue_nback,
+        post_release_started_ms=post_release_started_ms,
+        post_release_end_ms=post_release_end_ms,
+        post_release_pinch_samples=post_release_pinch_samples,
         **zone_stats.to_dict(),
     )
 
@@ -600,11 +640,16 @@ def _run_live_formal_phase(
     nback_timeline.start(start_ms)
     end_reason = ""
     final_now_ms = start_ms
+    post_release_started_ms: float | None = None
+    post_release_end_ms: float | None = None
+    post_release_pinch_samples = 0
 
     while True:
         now_ms = time.monotonic() * 1000.0
+        nback_active = post_release_started_ms is None or policy.post_release_continue_nback
         for key_name in display.poll_keydowns():
-            nback_timeline.record_response(key_name, now_ms)
+            if nback_active:
+                nback_timeline.record_response(key_name, now_ms)
 
         frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
         while frame is not None:
@@ -625,31 +670,47 @@ def _run_live_formal_phase(
                 print(f"enter {latest_zone}")
             previous_logged_zone = latest_zone
             logger.write_pinch_sample(latest_sample, calibration=calibration, zone=latest_zone)
+            if post_release_started_ms is not None:
+                post_release_pinch_samples += 1
             frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
 
-        emitted = _advance_scheduler_for_current_state(
-            scheduler,
-            zone=latest_zone,
-            now_ms=now_ms,
-            latest_sample=latest_sample,
-            digit_onsets_ms=nback_timeline.digit_onsets_ms,
-            haptic_debug_config=debug_config,
-        )
+        emitted: list[Any] = []
+        if post_release_started_ms is None:
+            emitted = _advance_scheduler_for_current_state(
+                scheduler,
+                zone=latest_zone,
+                now_ms=now_ms,
+                latest_sample=latest_sample,
+                digit_onsets_ms=nback_timeline.digit_onsets_ms,
+                haptic_debug_config=debug_config,
+            )
         for event in emitted:
             sender.record_scheduled_event(event)
             episode_state.observe(event)
             _print_haptic_feedback_if_needed(event, feedback_config)
         total_haptic_events += len(emitted)
+        sender.poll_due_control_commands(now_ms)
 
-        for row in nback_timeline.finalize_until(now_ms, session_id=session_id):
-            logger.write_nback_event(row)
-        tick = nback_timeline.tick(now_ms)
-        display.draw(tick)
+        if nback_active:
+            for row in nback_timeline.finalize_until(now_ms, session_id=session_id):
+                logger.write_nback_event(row)
+            tick = nback_timeline.tick(now_ms)
+            display.draw(tick)
+        else:
+            display.draw(NBackTick(phase=NBACK_PHASE_COMPLETE, trial=None))
 
         if any(_event_should_end_session(event, policy) for event in emitted):
-            end_reason = "haptic_release"
+            release_event = next(event for event in emitted if _event_should_end_session(event, policy))
+            post_release_started_ms = now_ms
+            post_release_end_ms = now_ms + float(getattr(release_event, "duration_ms", 0) or 0) + policy.post_release_recording_ms
+            end_reason = "haptic_release_post_recording"
+        if post_release_end_ms is not None and now_ms >= post_release_end_ms:
+            end_reason = "haptic_release_post_recording_complete"
             final_now_ms = now_ms
             break
+        if post_release_end_ms is not None:
+            display.tick(60)
+            continue
         nback_complete = nback_timeline.is_complete(now_ms)
         duration_elapsed = now_ms >= duration_deadline_ms
         if nback_complete or duration_elapsed:
@@ -663,8 +724,14 @@ def _run_live_formal_phase(
             break
         display.tick(60)
 
-    for row in nback_timeline.finalize_until(final_now_ms, session_id=session_id):
+    final_nback_ms = (
+        final_now_ms
+        if post_release_started_ms is None or policy.post_release_continue_nback
+        else post_release_started_ms
+    )
+    for row in nback_timeline.finalize_until(final_nback_ms, session_id=session_id):
         logger.write_nback_event(row)
+    sender.poll_due_control_commands(final_now_ms)
     zone_stats.finalize(final_now_ms)
     sender.write_csv(logger.paths.haptic_events_csv)
     logger.write_nback_events([])
@@ -682,6 +749,11 @@ def _run_live_formal_phase(
         interrupted_haptic_trial=episode_state.interrupted_haptic_trial,
         allow_multiple_haptic_trials=policy.allow_multiple_haptic_trials,
         finish_active_haptic_before_exit=policy.finish_active_haptic_before_exit,
+        post_release_recording_ms=policy.post_release_recording_ms,
+        post_release_continue_nback=policy.post_release_continue_nback,
+        post_release_started_ms=post_release_started_ms,
+        post_release_end_ms=post_release_end_ms,
+        post_release_pinch_samples=post_release_pinch_samples,
         **zone_stats.to_dict(),
     )
 
@@ -815,6 +887,8 @@ def _session_end_policy_from_config(session_config: dict[str, Any]) -> SessionEn
         finish_active_haptic_before_exit=bool(
             session_config.get("finish_active_haptic_before_exit", True)
         ),
+        post_release_recording_ms=float(session_config.get("post_release_recording_ms", 0)),
+        post_release_continue_nback=bool(session_config.get("post_release_continue_nback", False)),
     )
 
 
@@ -898,6 +972,11 @@ def _haptic_end_summary_fields(
             "interrupted_haptic_trial": False,
             "allow_multiple_haptic_trials": policy.allow_multiple_haptic_trials,
             "finish_active_haptic_before_exit": policy.finish_active_haptic_before_exit,
+            "post_release_recording_ms": policy.post_release_recording_ms,
+            "post_release_continue_nback": policy.post_release_continue_nback,
+            "post_release_started_ms": None,
+            "post_release_end_ms": None,
+            "post_release_pinch_samples": 0,
         }
     return {
         "end_reason": result.end_reason or end_reason,
@@ -907,6 +986,11 @@ def _haptic_end_summary_fields(
         "interrupted_haptic_trial": result.interrupted_haptic_trial,
         "allow_multiple_haptic_trials": result.allow_multiple_haptic_trials,
         "finish_active_haptic_before_exit": result.finish_active_haptic_before_exit,
+        "post_release_recording_ms": result.post_release_recording_ms,
+        "post_release_continue_nback": result.post_release_continue_nback,
+        "post_release_started_ms": result.post_release_started_ms,
+        "post_release_end_ms": result.post_release_end_ms,
+        "post_release_pinch_samples": result.post_release_pinch_samples,
     }
 
 
@@ -967,6 +1051,15 @@ def _end_reason_at_limit(
     if nback_timeline.is_complete(now_ms):
         return "nback_complete"
     return "duration_elapsed"
+
+
+def _next_sample_time_ms(
+    sample_list: list[PinchInputSample],
+    sample_index: int,
+) -> float | None:
+    if sample_index >= len(sample_list):
+        return None
+    return float(getattr(sample_list[sample_index], "monotonic_ms"))
 
 
 def _print_haptic_feedback_if_needed(

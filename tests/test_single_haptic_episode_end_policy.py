@@ -15,7 +15,7 @@ from run_pinch_haptic_1back import (
 from simple_haptic_sender import SimpleHapticSender
 
 
-def test_release_sets_session_should_end_and_blocks_second_contact(tmp_path) -> None:
+def test_release_starts_post_recording_and_blocks_second_contact(tmp_path) -> None:
     session_id = "single-episode-session"
     logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
     timeline = NBackTimeline(
@@ -45,10 +45,11 @@ def test_release_sets_session_should_end_and_blocks_second_contact(tmp_path) -> 
         nback_timeline=timeline,
         sender=SimpleHapticSender(session_id=session_id),
         scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
-        session_end_policy=SessionEndPolicy(
-            allow_multiple_haptic_trials=False,
-            finish_active_haptic_before_exit=True,
-        ),
+            session_end_policy=SessionEndPolicy(
+                allow_multiple_haptic_trials=False,
+                finish_active_haptic_before_exit=True,
+                post_release_recording_ms=3,
+            ),
         start_monotonic_ms=1000.0,
         end_monotonic_ms=3000.0,
         tick_interval_ms=1.0,
@@ -58,10 +59,14 @@ def test_release_sets_session_should_end_and_blocks_second_contact(tmp_path) -> 
         rows = list(csv.DictReader(handle))
 
     assert result.session_should_end is True
-    assert result.end_reason == "haptic_release"
+    assert result.end_reason == "haptic_release_post_recording_complete"
     assert result.haptic_episode_completed is True
     assert result.haptic_trial_count == 1
     assert result.total_nback_trials < 10
+    assert result.post_release_recording_ms == 3
+    assert result.post_release_started_ms is not None
+    assert result.post_release_end_ms == result.post_release_started_ms + 4
+    assert result.post_release_pinch_samples >= 1
     assert [row["event_name"] for row in rows] == ["contact", "release"]
     assert rows[-1]["end_reason"] == "haptic_release"
     assert rows[-1]["haptic_episode_completed"] == "True"
