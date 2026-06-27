@@ -47,6 +47,10 @@ def test_calibration_uses_min_max_and_classifies_zones() -> None:
     assert result.threshold_a == pytest.approx(0.0685)
     assert result.open_valid_frame_count == 3
     assert result.pinch_valid_frame_count == 3
+    assert result.distance_range == pytest.approx(0.09)
+    assert result.distance_range_ratio == pytest.approx(0.9)
+    assert result.calibration_passed is True
+    assert result.calibration_failure_reason == ""
     assert result.thumb_node_id == 4
     assert result.target_finger_node_id == 14
     assert is_in_open_zone(result.threshold_a, result) is True
@@ -63,3 +67,21 @@ def test_calibration_requires_min_valid_frames() -> None:
     with pytest.raises(ValueError, match="open hand valid frame count"):
         calibrate_from_samples([_sample(0.08)], [_sample(0.02), _sample(0.01)], config=config)
 
+
+def test_calibration_fails_when_min_max_range_is_too_small() -> None:
+    config = PinchCalibrationConfig(
+        min_valid_frames=3,
+        min_distance_range=0.02,
+        min_distance_range_ratio=0.15,
+    )
+
+    result = calibrate_from_samples(
+        [_sample(0.051), _sample(0.052), _sample(0.053)],
+        [_sample(0.050), _sample(0.0505), _sample(0.051)],
+        config=config,
+    )
+
+    assert result.distance_range == pytest.approx(0.003)
+    assert result.distance_range_ratio == pytest.approx(0.003 / 0.053)
+    assert result.calibration_passed is False
+    assert result.calibration_failure_reason == "max-min too small"

@@ -15,6 +15,8 @@ class PinchCalibrationConfig:
     pinch_hand_duration_s: float = 3.0
     threshold_ratio: float = 0.65
     min_valid_frames: int = 30
+    min_distance_range: float = 0.02
+    min_distance_range_ratio: float = 0.15
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -34,6 +36,18 @@ class PinchCalibrationConfig:
         if isinstance(self.min_valid_frames, bool) or int(self.min_valid_frames) <= 0:
             raise ValueError("min_valid_frames must be a positive integer.")
         object.__setattr__(self, "min_valid_frames", int(self.min_valid_frames))
+        object.__setattr__(
+            self,
+            "min_distance_range",
+            _non_negative_float(self.min_distance_range, "min_distance_range"),
+        )
+        range_ratio = _finite_float(
+            self.min_distance_range_ratio,
+            "min_distance_range_ratio",
+        )
+        if range_ratio < 0.0 or range_ratio > 1.0:
+            raise ValueError("min_distance_range_ratio must be between 0 and 1.")
+        object.__setattr__(self, "min_distance_range_ratio", range_ratio)
 
 
 @dataclass(frozen=True)
@@ -50,6 +64,22 @@ class PinchCalibrationResult:
     pinch_hand_duration_s: float
     open_valid_frame_count: int
     pinch_valid_frame_count: int
+    distance_range: float | None = None
+    distance_range_ratio: float | None = None
+    calibration_passed: bool = True
+    calibration_failure_reason: str = ""
+
+    def __post_init__(self) -> None:
+        distance_range = float(self.max_distance) - float(self.min_distance)
+        distance_range_ratio = (
+            distance_range / float(self.max_distance)
+            if float(self.max_distance) > 0.0
+            else 0.0
+        )
+        if self.distance_range is None:
+            object.__setattr__(self, "distance_range", distance_range)
+        if self.distance_range_ratio is None:
+            object.__setattr__(self, "distance_range_ratio", distance_range_ratio)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -123,6 +153,11 @@ def calibrate_from_distances(
         max_distance=max_distance,
         threshold_ratio=calibration_config.threshold_ratio,
     )
+    quality = check_calibration_quality(
+        min_distance=min_distance,
+        max_distance=max_distance,
+        config=calibration_config,
+    )
     return PinchCalibrationResult(
         min_distance=min_distance,
         max_distance=max_distance,
@@ -134,7 +169,38 @@ def calibrate_from_distances(
         pinch_hand_duration_s=calibration_config.pinch_hand_duration_s,
         open_valid_frame_count=len(open_values),
         pinch_valid_frame_count=len(pinch_values),
+        distance_range=quality["distance_range"],
+        distance_range_ratio=quality["distance_range_ratio"],
+        calibration_passed=quality["calibration_passed"],
+        calibration_failure_reason=quality["calibration_failure_reason"],
     )
+
+
+def check_calibration_quality(
+    *,
+    min_distance: float,
+    max_distance: float,
+    config: PinchCalibrationConfig | None = None,
+) -> dict[str, Any]:
+    """Return range-based calibration quality fields."""
+
+    calibration_config = config or PinchCalibrationConfig()
+    min_value = _finite_float(min_distance, "min_distance")
+    max_value = _finite_float(max_distance, "max_distance")
+    distance_range = max_value - min_value
+    distance_range_ratio = distance_range / max_value if max_value > 0.0 else 0.0
+    failure_reason = ""
+    if (
+        distance_range < calibration_config.min_distance_range
+        or distance_range_ratio < calibration_config.min_distance_range_ratio
+    ):
+        failure_reason = "max-min too small"
+    return {
+        "distance_range": distance_range,
+        "distance_range_ratio": distance_range_ratio,
+        "calibration_passed": not failure_reason,
+        "calibration_failure_reason": failure_reason,
+    }
 
 
 def is_in_open_zone(distance: float | None, calibration: PinchCalibrationResult) -> bool:
@@ -206,3 +272,9 @@ def _positive_float(value: Any, name: str) -> float:
         raise ValueError(f"{name} must be positive.")
     return result
 
+
+def _non_negative_float(value: Any, name: str) -> float:
+    result = _finite_float(value, name)
+    if result < 0.0:
+        raise ValueError(f"{name} must be non-negative.")
+    return result

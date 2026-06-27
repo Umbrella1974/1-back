@@ -46,6 +46,69 @@ from vendor_exp2_abc.live_raw_stream import LiveRawStreamServer
 
 
 DEFAULT_TICK_INTERVAL_MS = 10.0
+CALIBRATION_FAILURE_MESSAGE = (
+    "Calibration failed: max-min too small.\n"
+    "Check target_finger_node_id, hand gesture, and whether you are opening/pinching the configured fingers."
+)
+
+
+@dataclass(frozen=True)
+class HapticDebugConfig:
+    print_zone_transitions: bool = False
+    print_scheduler_events: bool = True
+
+
+@dataclass
+class ZoneRunStats:
+    max_open_zone_duration_ms: float = 0.0
+    max_closed_zone_duration_ms: float = 0.0
+    open_zone_run_count: int = 0
+    closed_zone_run_count: int = 0
+    _current_zone: str | None = None
+    _current_start_ms: float | None = None
+
+    def update(self, zone: str, now_ms: float) -> None:
+        if zone == self._current_zone:
+            return
+        self._finish_current(float(now_ms))
+        if zone in {"open_zone", "closed_zone"}:
+            if zone == "open_zone":
+                self.open_zone_run_count += 1
+            else:
+                self.closed_zone_run_count += 1
+            self._current_zone = zone
+            self._current_start_ms = float(now_ms)
+            return
+        self._current_zone = None
+        self._current_start_ms = None
+
+    def finalize(self, now_ms: float) -> None:
+        self._finish_current(float(now_ms))
+        self._current_zone = None
+        self._current_start_ms = None
+
+    def to_dict(self) -> dict[str, float | int]:
+        return {
+            "max_open_zone_duration_ms": self.max_open_zone_duration_ms,
+            "max_closed_zone_duration_ms": self.max_closed_zone_duration_ms,
+            "open_zone_run_count": self.open_zone_run_count,
+            "closed_zone_run_count": self.closed_zone_run_count,
+        }
+
+    def _finish_current(self, now_ms: float) -> None:
+        if self._current_zone is None or self._current_start_ms is None:
+            return
+        duration = max(0.0, now_ms - self._current_start_ms)
+        if self._current_zone == "open_zone":
+            self.max_open_zone_duration_ms = max(
+                self.max_open_zone_duration_ms,
+                duration,
+            )
+        elif self._current_zone == "closed_zone":
+            self.max_closed_zone_duration_ms = max(
+                self.max_closed_zone_duration_ms,
+                duration,
+            )
 
 
 @dataclass(frozen=True)
@@ -63,6 +126,10 @@ class PinchHaptic1BackCoreResult:
     total_haptic_events: int
     total_nback_trials: int
     total_nback_responses: int
+    max_open_zone_duration_ms: float = 0.0
+    max_closed_zone_duration_ms: float = 0.0
+    open_zone_run_count: int = 0
+    closed_zone_run_count: int = 0
 
 
 def run_pinch_haptic_1back_core(
@@ -114,6 +181,7 @@ def run_pinch_haptic_1back_core(
     total_haptic_events = 0
     now_ms = float(start_monotonic_ms)
     end_ms = float(end_monotonic_ms)
+    zone_stats = ZoneRunStats()
 
     while now_ms <= end_ms + 1e-9:
         while (
@@ -125,6 +193,7 @@ def run_pinch_haptic_1back_core(
                 getattr(latest_sample, "pinch_distance", None),
                 calibration,
             )
+            zone_stats.update(latest_zone, float(getattr(latest_sample, "monotonic_ms")))
             logger.write_pinch_sample(latest_sample, calibration=calibration, zone=latest_zone)
             sample_index += 1
 
@@ -170,6 +239,7 @@ def run_pinch_haptic_1back_core(
 
     for row in nback_timeline.finalize_until(end_ms, session_id=logger.session_id):
         logger.write_nback_event(row)
+    zone_stats.finalize(end_ms)
     logger.write_nback_events([])
     haptic_sender.write_csv(logger.paths.haptic_events_csv)
     return PinchHaptic1BackCoreResult(
@@ -178,6 +248,7 @@ def run_pinch_haptic_1back_core(
         total_haptic_events=total_haptic_events,
         total_nback_trials=logger.total_nback_trials,
         total_nback_responses=logger.total_nback_responses,
+        **zone_stats.to_dict(),
     )
 
 
@@ -191,6 +262,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     calibration_config_payload = _object_section(config, "calibration")
     haptic_config = _object_section(config, "haptic")
     sync_config = _object_section(config, "sync")
+    haptic_debug_config = _haptic_debug_config_from_dualtask_config(config)
 
     session_id = make_session_id(session_config.get("session_id_prefix", "pinch_haptic_1back"))
     logger = DualTaskLogger(
@@ -211,6 +283,11 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         pinch_hand_duration_s=calibration_config_payload.get("pinch_hand_duration_s", 3.0),
         threshold_ratio=calibration_config_payload.get("threshold_ratio", 0.65),
         min_valid_frames=calibration_config_payload.get("min_valid_frames", 30),
+        min_distance_range=calibration_config_payload.get("min_distance_range", 0.02),
+        min_distance_range_ratio=calibration_config_payload.get(
+            "min_distance_range_ratio",
+            0.15,
+        ),
     )
     sender_config = SimpleHapticSenderConfig(
         vibration_enabled=bool(haptic_config.get("vibration_enabled", False)),
@@ -231,6 +308,8 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     errors: list[str] = []
     start_wall = _now_iso()
     total_haptic_events = 0
+    calibration: PinchCalibrationResult | None = None
+    formal_result: PinchHaptic1BackCoreResult | None = None
     server = _make_manus_tcp_server(manus_config)
     manus_tcp_log_state = ManusTcpLogState()
     display: _NBackPygameDisplay | None = None
@@ -276,6 +355,15 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         )
         logger.write_calibration(calibration)
         print(f"Calibration threshold_a={calibration.threshold_a:.6f}")
+        if not _should_enter_formal_phase(calibration):
+            warnings.append(f"calibration_failed: {calibration.calibration_failure_reason}")
+            print(CALIBRATION_FAILURE_MESSAGE)
+            display = _NBackPygameDisplay()
+            display.show_text_and_wait(
+                f"{CALIBRATION_FAILURE_MESSAGE}\n\n按空格键退出",
+                wait_key_name="space",
+            )
+            return logger.session_dir
 
         display = _NBackPygameDisplay()
         display.show_text_and_wait(
@@ -287,7 +375,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             "按空格键开始正式双任务",
             wait_key_name="space",
         )
-        result = _run_live_formal_phase(
+        formal_result = _run_live_formal_phase(
             server,
             parser,
             logger,
@@ -300,8 +388,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             session_id=session_id,
             save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
             tcp_log_state=manus_tcp_log_state,
+            haptic_debug_config=haptic_debug_config,
         )
-        total_haptic_events = result.total_haptic_events
+        total_haptic_events = formal_result.total_haptic_events
     except Exception as exc:
         errors.append(str(exc))
         raise
@@ -313,8 +402,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         sender.write_csv(logger.paths.haptic_events_csv)
         logger.write_nback_events([])
         end_wall = _now_iso()
-        logger.write_summary(
-            {
+        summary = {
                 "session_id": session_id,
                 "participant_id": session_config.get("participant_id", ""),
                 "condition_id": session_config.get("condition_id", ""),
@@ -333,8 +421,12 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "matrix_enabled": sender_config.matrix_enabled,
                 "warnings": warnings,
                 "errors": errors,
-            }
-        )
+        }
+        summary.update(_calibration_summary_fields(calibration))
+        summary.update(_zone_summary_fields(formal_result))
+        if len(sender.records) == 0:
+            _append_no_haptic_event_warnings(warnings, summary, plan)
+        logger.write_summary(summary)
     print(f"Dual-task complete. Haptic events: {total_haptic_events}")
     return logger.session_dir
 
@@ -361,11 +453,15 @@ def _run_live_formal_phase(
     session_id: str,
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None = None,
+    haptic_debug_config: HapticDebugConfig | None = None,
 ) -> PinchHaptic1BackCoreResult:
     scheduler = HapticTrialScheduler(plan, scheduler_config)
     latest_sample: PinchInputSample | None = None
     latest_zone = "invalid"
+    previous_logged_zone = "invalid"
     total_haptic_events = 0
+    zone_stats = ZoneRunStats()
+    debug_config = haptic_debug_config or HapticDebugConfig()
     nback_timeline.start(time.monotonic() * 1000.0)
 
     while True:
@@ -383,6 +479,14 @@ def _run_live_formal_phase(
                 getattr(latest_sample, "pinch_distance", None),
                 calibration,
             )
+            zone_stats.update(latest_zone, float(getattr(latest_sample, "monotonic_ms")))
+            if (
+                debug_config.print_zone_transitions
+                and latest_zone != previous_logged_zone
+                and latest_zone in {"open_zone", "closed_zone"}
+            ):
+                print(f"enter {latest_zone}")
+            previous_logged_zone = latest_zone
             logger.write_pinch_sample(latest_sample, calibration=calibration, zone=latest_zone)
             frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
 
@@ -392,6 +496,7 @@ def _run_live_formal_phase(
             now_ms=now_ms,
             latest_sample=latest_sample,
             digit_onsets_ms=nback_timeline.digit_onsets_ms,
+            haptic_debug_config=debug_config,
         )
         for event in emitted:
             sender.record_scheduled_event(event)
@@ -408,6 +513,7 @@ def _run_live_formal_phase(
 
     for row in nback_timeline.finalize_all(session_id=session_id):
         logger.write_nback_event(row)
+    zone_stats.finalize(time.monotonic() * 1000.0)
     sender.write_csv(logger.paths.haptic_events_csv)
     logger.write_nback_events([])
     return PinchHaptic1BackCoreResult(
@@ -416,6 +522,7 @@ def _run_live_formal_phase(
         total_haptic_events=total_haptic_events,
         total_nback_trials=logger.total_nback_trials,
         total_nback_responses=logger.total_nback_responses,
+        **zone_stats.to_dict(),
     )
 
 
@@ -426,8 +533,10 @@ def _advance_scheduler_for_current_state(
     now_ms: float,
     latest_sample: PinchInputSample | None,
     digit_onsets_ms: Iterable[float] | None,
+    haptic_debug_config: HapticDebugConfig | None = None,
 ) -> list[Any]:
     events: list[Any] = []
+    debug_config = haptic_debug_config or HapticDebugConfig(print_scheduler_events=False)
     pinch_distance = (
         getattr(latest_sample, "pinch_distance", None) if latest_sample is not None else None
     )
@@ -435,6 +544,7 @@ def _advance_scheduler_for_current_state(
         getattr(latest_sample, "frame_index", None) if latest_sample is not None else None
     )
     for _ in range(64):
+        previous_state = getattr(scheduler, "state", "")
         emitted = scheduler.update(
             zone=zone,
             now_ms=now_ms,
@@ -442,6 +552,13 @@ def _advance_scheduler_for_current_state(
             frame_index=frame_index,
             digit_onsets_ms=digit_onsets_ms,
         )
+        if debug_config.print_scheduler_events:
+            _print_scheduler_debug(
+                scheduler=scheduler,
+                previous_state=previous_state,
+                current_zone=zone,
+                emitted=emitted,
+            )
         events.extend(emitted)
         pending_onset = _pending_onset_ms(scheduler)
         if pending_onset is None or pending_onset > now_ms:
@@ -521,6 +638,105 @@ def _nback_config_from_dualtask_config(config: dict[str, Any]) -> NBackConfig:
         key_different=payload.get("key_different", nback_defaults.KEY_DIFFERENT),
         random_seed=payload.get("random_seed"),
     )
+
+
+def _haptic_debug_config_from_dualtask_config(config: dict[str, Any]) -> HapticDebugConfig:
+    payload = config.get("haptic_debug", {})
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ValueError("haptic_debug section must be an object.")
+    return HapticDebugConfig(
+        print_zone_transitions=bool(payload.get("print_zone_transitions", False)),
+        print_scheduler_events=bool(payload.get("print_scheduler_events", True)),
+    )
+
+
+def _calibration_summary_fields(
+    calibration: PinchCalibrationResult | None,
+) -> dict[str, Any]:
+    if calibration is None:
+        return {
+            "distance_range": None,
+            "distance_range_ratio": None,
+            "calibration_passed": False,
+            "calibration_failure_reason": "calibration_not_completed",
+        }
+    return {
+        "distance_range": calibration.distance_range,
+        "distance_range_ratio": calibration.distance_range_ratio,
+        "calibration_passed": calibration.calibration_passed,
+        "calibration_failure_reason": calibration.calibration_failure_reason,
+    }
+
+
+def _should_enter_formal_phase(calibration: PinchCalibrationResult) -> bool:
+    return bool(calibration.calibration_passed)
+
+
+def _zone_summary_fields(
+    result: PinchHaptic1BackCoreResult | None,
+) -> dict[str, float | int]:
+    if result is None:
+        return ZoneRunStats().to_dict()
+    return {
+        "max_open_zone_duration_ms": result.max_open_zone_duration_ms,
+        "max_closed_zone_duration_ms": result.max_closed_zone_duration_ms,
+        "open_zone_run_count": result.open_zone_run_count,
+        "closed_zone_run_count": result.closed_zone_run_count,
+    }
+
+
+def _append_no_haptic_event_warnings(
+    warnings: list[str],
+    summary: dict[str, Any],
+    plan: HapticPlanConfig,
+) -> None:
+    min_contact_delay = _min_contact_onset_delay_ms(plan)
+    max_open_duration = float(summary.get("max_open_zone_duration_ms") or 0.0)
+    warnings.extend(
+        [
+            "no_haptic_events",
+            f"max_open_zone_duration_ms={max_open_duration}",
+            f"min_contact_onset_delay_ms={min_contact_delay}",
+        ]
+    )
+    if max_open_duration < min_contact_delay:
+        warnings.append(
+            "open_zone segments were shorter than contact onset delay; contact could not trigger."
+        )
+
+
+def _min_contact_onset_delay_ms(plan: HapticPlanConfig) -> int:
+    contact = plan.events[0]
+    delay_range = contact.onset_delay_ms or plan.timing.contact_onset_delay_ms
+    return int(delay_range[0])
+
+
+def _print_scheduler_debug(
+    *,
+    scheduler: HapticTrialScheduler,
+    previous_state: str,
+    current_zone: str,
+    emitted: list[Any],
+) -> None:
+    current_state = getattr(scheduler, "state", "")
+    pending = getattr(scheduler, "_pending", None)
+    if previous_state == "WAIT_OPEN_ZONE" and current_state == "PENDING_CONTACT":
+        sampled_delay = getattr(pending, "sampled_delay_ms", None)
+        print(f"pending contact sampled delay: {sampled_delay}")
+    if (
+        previous_state == "PENDING_CONTACT"
+        and current_state == "WAIT_OPEN_ZONE"
+        and current_zone != "open_zone"
+    ):
+        print("pending contact canceled because zone exited")
+    for event in emitted:
+        event_name = getattr(event, "event_name", "")
+        if event_name == "contact":
+            print("contact emitted")
+        else:
+            print(f"event emitted: {event_name}")
 
 
 class _NBackPygameDisplay:

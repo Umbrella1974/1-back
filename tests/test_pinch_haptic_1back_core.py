@@ -11,7 +11,11 @@ from nback_dualtask_runner import NBackConfig, NBackTimeline
 from pinch_calibration import PinchCalibrationResult
 from run_pinch_haptic_1back import (
     NBackResponseInput,
+    _append_no_haptic_event_warnings,
+    _calibration_summary_fields,
     _pygame_key_constant,
+    _should_enter_formal_phase,
+    _zone_summary_fields,
     run_pinch_haptic_1back_core,
 )
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
@@ -103,6 +107,84 @@ def test_pygame_key_constant_accepts_space_aliases_without_importing_pygame() ->
     assert _pygame_key_constant(FakePygame, "enter") == 13
 
 
+def test_failed_calibration_summary_blocks_formal_phase() -> None:
+    calibration = PinchCalibrationResult(
+        min_distance=0.050,
+        max_distance=0.053,
+        threshold_a=0.052,
+        threshold_ratio=0.65,
+        thumb_node_id=4,
+        target_finger_node_id=14,
+        open_hand_duration_s=1.0,
+        pinch_hand_duration_s=1.0,
+        open_valid_frame_count=3,
+        pinch_valid_frame_count=3,
+        distance_range=0.003,
+        distance_range_ratio=0.003 / 0.053,
+        calibration_passed=False,
+        calibration_failure_reason="max-min too small",
+    )
+
+    summary = _calibration_summary_fields(calibration)
+
+    assert _should_enter_formal_phase(calibration) is False
+    assert summary["calibration_passed"] is False
+    assert summary["calibration_failure_reason"] == "max-min too small"
+
+
+def test_no_haptic_warning_explains_open_zone_too_short(tmp_path) -> None:
+    session_id = "no-haptic-session"
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    timeline = NBackTimeline(
+        NBackConfig(
+            num_trials=1,
+            fixation_duration_ms=0,
+            stimulus_duration_ms=100,
+            isi_min_ms=100,
+            isi_max_ms=100,
+            key_same="left",
+            key_different="right",
+        ),
+        sequence=[2],
+        isi_ms=[100],
+        wall_time_fn=lambda: 0.0,
+    )
+    plan = _slow_contact_plan()
+
+    result = run_pinch_haptic_1back_core(
+        [
+            _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
+            _sample(session_id, frame_index=2, monotonic_ms=1100.0, distance=0.02),
+        ],
+        calibration=_calibration(),
+        plan=plan,
+        logger=logger,
+        nback_timeline=timeline,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        start_monotonic_ms=1000.0,
+        end_monotonic_ms=1200.0,
+        tick_interval_ms=10.0,
+    )
+    summary = {
+        "total_haptic_events": result.total_haptic_events,
+        **_zone_summary_fields(result),
+    }
+    warnings: list[str] = []
+
+    _append_no_haptic_event_warnings(warnings, summary, plan)
+
+    assert result.total_haptic_events == 0
+    assert result.max_open_zone_duration_ms == 100.0
+    assert "no_haptic_events" in warnings
+    assert "max_open_zone_duration_ms=100.0" in warnings
+    assert "min_contact_onset_delay_ms=500" in warnings
+    assert (
+        "open_zone segments were shorter than contact onset delay; contact could not trigger."
+        in warnings
+    )
+
+
 def _calibration() -> PinchCalibrationResult:
     return PinchCalibrationResult(
         min_distance=0.01,
@@ -175,6 +257,13 @@ def _plan():
             },
         }
     )
+
+
+def _slow_contact_plan():
+    payload = _plan().to_dict()
+    payload["timing"]["contact_onset_delay_ms"] = [500, 500]
+    payload["events"][0]["onset_delay_ms"] = [500, 500]
+    return haptic_plan_config_from_dict(payload)
 
 
 def _samples(session_id: str) -> list[PinchInputSample]:

@@ -21,11 +21,17 @@ calibration:
   pinch_hand_duration_s: 3.0
   threshold_ratio: 0.65
   min_valid_frames: 30
+  min_distance_range: 0.02
+  min_distance_range_ratio: 0.15
 
 haptic:
   vibration_enabled: false
   matrix_enabled: false
   visual_text_cue_enabled: false
+
+haptic_debug:
+  print_zone_transitions: false
+  print_scheduler_events: true
 
 sync:
   avoid_haptic_on_digit_onset: true
