@@ -31,6 +31,17 @@ haptic:
   vibration_enabled: false
   matrix_enabled: false
   visual_text_cue_enabled: false
+  disabled_mode: true
+  vibration_tcp_host: 127.0.0.1
+  vibration_tcp_port: 12345
+  vibration_tcp_required: false
+  matrix_tcp_host: 127.0.0.1
+  matrix_tcp_port: 12346
+  matrix_tcp_required: false
+  connect_timeout_s: 1.0
+  send_timeout_s: 0.5
+  max_queue_size: 128
+  matrix_latest_only: true
 
 haptic_defaults:
   vibration_duration_ms: [150, 300]

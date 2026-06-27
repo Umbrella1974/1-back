@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from haptic_plan_config import haptic_plan_config_from_dict
+from vendor_exp2_abc.vibration_tcp_worker import VibrationHapticConnectionError
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
 
 
@@ -179,3 +180,109 @@ def test_record_scheduled_event_dispatches_to_public_send_methods(
     assert sender.called_sender == expected_sender
     assert record.event_name == event_name
     assert record.actual_zone_at_emit == "open_zone"
+
+
+def test_enabled_vibration_sender_queues_vendor_tcp_payload(tmp_path) -> None:
+    sent_payloads: list[bytes] = []
+
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=True,
+            matrix_enabled=False,
+            disabled_mode=False,
+            vibration_socket_factory=_socket_factory(sent_payloads),
+        ),
+        session_id="tcp-vibration",
+        wall_time_fn=lambda: 0.0,
+    )
+
+    record = sender.send_contact(command_id=1, duration_ms=150)
+    sender.write_csv(tmp_path / "haptic_events.csv")
+
+    assert sent_payloads == [b"1\n"]
+    assert record.tcp_enabled is True
+    assert record.tcp_queued is True
+    assert record.tcp_success is True
+    assert record.send_status == "sent"
+
+
+def test_enabled_matrix_sender_queues_vendor_tcp_packet(tmp_path) -> None:
+    sent_payloads: list[bytes] = []
+
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=False,
+            matrix_enabled=True,
+            disabled_mode=False,
+            matrix_socket_factory=_socket_factory(sent_payloads),
+        ),
+        session_id="tcp-matrix",
+        wall_time_fn=lambda: 0.0,
+    )
+
+    record = sender.send_matrix_left([1, 2, 3], duration_ms=500)
+    sender.write_csv(tmp_path / "haptic_events.csv")
+
+    assert sent_payloads == [b"\xAA\x55\xAA\x55\x03\x01\x02\x03\x06"]
+    assert record.tcp_enabled is True
+    assert record.tcp_queued is True
+    assert record.tcp_success is True
+    assert record.send_status == "sent"
+
+
+def test_tcp_not_required_connection_failure_records_not_connected() -> None:
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=True,
+            disabled_mode=False,
+            vibration_tcp_required=False,
+            vibration_socket_factory=_failing_socket_factory,
+        ),
+        session_id="tcp-warning",
+    )
+
+    record = sender.send_contact(command_id=1, duration_ms=150)
+
+    assert record.tcp_enabled is True
+    assert record.tcp_queued is False
+    assert record.tcp_success is False
+    assert record.send_status == "not_connected"
+    assert record.not_sent_reason == "not_connected"
+
+
+def test_tcp_required_connection_failure_raises() -> None:
+    with pytest.raises(VibrationHapticConnectionError):
+        SimpleHapticSender(
+            SimpleHapticSenderConfig(
+                vibration_enabled=True,
+                disabled_mode=False,
+                vibration_tcp_required=True,
+                vibration_socket_factory=_failing_socket_factory,
+            ),
+            session_id="tcp-required",
+        )
+
+
+class _FakeSocket:
+    def __init__(self, sent_payloads: list[bytes]) -> None:
+        self.sent_payloads = sent_payloads
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
+
+    def sendall(self, payload: bytes) -> None:
+        self.sent_payloads.append(bytes(payload))
+
+    def close(self) -> None:
+        pass
+
+
+def _socket_factory(sent_payloads: list[bytes]):
+    def factory(address, timeout):
+        return _FakeSocket(sent_payloads)
+
+    return factory
+
+
+def _failing_socket_factory(address, timeout):
+    raise OSError("no tcp server")

@@ -392,7 +392,17 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         vibration_enabled=bool(haptic_config.get("vibration_enabled", False)),
         matrix_enabled=bool(haptic_config.get("matrix_enabled", False)),
         visual_text_cue_enabled=bool(haptic_config.get("visual_text_cue_enabled", False)),
-        disabled_mode=True,
+        disabled_mode=bool(haptic_config.get("disabled_mode", True)),
+        vibration_tcp_host=str(haptic_config.get("vibration_tcp_host", "127.0.0.1")),
+        vibration_tcp_port=int(haptic_config.get("vibration_tcp_port", 12345)),
+        matrix_tcp_host=str(haptic_config.get("matrix_tcp_host", "127.0.0.1")),
+        matrix_tcp_port=int(haptic_config.get("matrix_tcp_port", 12346)),
+        vibration_tcp_required=bool(haptic_config.get("vibration_tcp_required", False)),
+        matrix_tcp_required=bool(haptic_config.get("matrix_tcp_required", False)),
+        connect_timeout_s=float(haptic_config.get("connect_timeout_s", 1.0)),
+        send_timeout_s=float(haptic_config.get("send_timeout_s", 0.5)),
+        max_queue_size=int(haptic_config.get("max_queue_size", 128)),
+        matrix_latest_only=bool(haptic_config.get("matrix_latest_only", True)),
     )
     sender = SimpleHapticSender(sender_config, session_id=session_id)
     scheduler_config = HapticTrialSchedulerConfig(
