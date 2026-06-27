@@ -58,6 +58,8 @@ WRIST_ROTATION_TIMESERIES_FIELDS = [
     "wrist_rotation_valid",
     "wrist_rotation_score",
     "wrist_rotation_class",
+    "distance_to_left",
+    "distance_to_right",
     "note",
 ]
 

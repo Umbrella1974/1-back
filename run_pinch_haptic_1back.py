@@ -617,6 +617,16 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                     if wrist_calibration is not None
                     else False
                 ),
+                "wrist_rotation_failure_reason": (
+                    wrist_calibration.failure_reason
+                    if wrist_calibration is not None
+                    else ""
+                ),
+                "wrist_rotation_timeseries_csv": (
+                    str(logger.paths.wrist_rotation_timeseries_csv)
+                    if wrist_rotation_config.enabled
+                    else ""
+                ),
                 "warnings": warnings,
                 "errors": errors,
         }
