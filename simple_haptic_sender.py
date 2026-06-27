@@ -1,4 +1,4 @@
-"""Simple disabled-mode haptic sender for plan dry-runs and logging."""
+"""Simple haptic sender for TCP output and disabled-mode logging."""
 
 from __future__ import annotations
 
@@ -67,20 +67,24 @@ HAPTIC_EVENT_FIELDS = [
 
 @dataclass(frozen=True)
 class SimpleHapticSenderConfig:
-    """Haptic sender toggles for the phase-one disabled sender."""
+    """Haptic sender toggles for TCP output and disabled-mode logging."""
 
     vibration_enabled: bool = False
     matrix_enabled: bool = False
     visual_text_cue_enabled: bool = False
     disabled_mode: bool = True
-    vibration_tcp_host: str = "127.0.0.1"
-    vibration_tcp_port: int = 12345
-    matrix_tcp_host: str = "127.0.0.1"
-    matrix_tcp_port: int = 12346
-    vibration_tcp_required: bool = False
-    matrix_tcp_required: bool = False
-    connect_timeout_s: float = 1.0
-    send_timeout_s: float = 0.5
+    vibration_tcp_enabled: bool = False
+    vibration_required: bool = False
+    vibration_host: str = "127.0.0.1"
+    vibration_port: int = 12346
+    matrix_tcp_enabled: bool = False
+    matrix_required: bool = False
+    matrix_host: str = "127.0.0.1"
+    matrix_port: int = 12345
+    vibration_connect_timeout_s: float = 2.0
+    vibration_send_timeout_s: float = 0.2
+    matrix_connect_timeout_s: float = 2.0
+    matrix_send_timeout_s: float = 0.2
     max_queue_size: int = 128
     matrix_latest_only: bool = True
     vibration_socket_factory: Any = socket.create_connection
@@ -92,20 +96,26 @@ class SimpleHapticSenderConfig:
             "matrix_enabled",
             "visual_text_cue_enabled",
             "disabled_mode",
-            "vibration_tcp_required",
-            "matrix_tcp_required",
+            "vibration_tcp_enabled",
+            "vibration_required",
+            "matrix_tcp_enabled",
+            "matrix_required",
             "matrix_latest_only",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be true or false.")
-        if int(self.vibration_tcp_port) <= 0:
-            raise ValueError("vibration_tcp_port must be positive.")
-        if int(self.matrix_tcp_port) <= 0:
-            raise ValueError("matrix_tcp_port must be positive.")
-        if float(self.connect_timeout_s) < 0.0:
-            raise ValueError("connect_timeout_s must be non-negative.")
-        if float(self.send_timeout_s) < 0.0:
-            raise ValueError("send_timeout_s must be non-negative.")
+        if int(self.vibration_port) <= 0:
+            raise ValueError("vibration_port must be positive.")
+        if int(self.matrix_port) <= 0:
+            raise ValueError("matrix_port must be positive.")
+        for name in (
+            "vibration_connect_timeout_s",
+            "vibration_send_timeout_s",
+            "matrix_connect_timeout_s",
+            "matrix_send_timeout_s",
+        ):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative.")
         if int(self.max_queue_size) <= 0:
             raise ValueError("max_queue_size must be positive.")
 
@@ -181,7 +191,7 @@ class HapticEventRecord:
 
 
 class SimpleHapticSender:
-    """Record haptic events without opening TCP connections."""
+    """Send haptic events over TCP or record them in disabled mode."""
 
     def __init__(
         self,
@@ -353,7 +363,7 @@ class SimpleHapticSender:
             if modality == "matrix"
             else False
         )
-        tcp_enabled = bool(target_enabled and not self.config.disabled_mode)
+        tcp_enabled = self._tcp_enabled_for_modality(modality, target_enabled)
         status = "planned"
         tcp_queued = False
         tcp_success: bool | None = None
@@ -361,7 +371,7 @@ class SimpleHapticSender:
         if not tcp_enabled:
             status = "disabled"
             tcp_success = False
-            notes.append("disabled_mode_no_tcp")
+            notes.append(_disabled_note_for_modality(self.config, modality))
         elif modality == "vibration" and self._vibration_worker is None:
             status = "not_connected"
             tcp_success = False
@@ -406,7 +416,7 @@ class SimpleHapticSender:
             tcp_queued=tcp_queued,
             tcp_success=tcp_success,
             send_status=status,
-            not_sent_reason=None if tcp_enabled else "disabled_mode_no_tcp",
+            not_sent_reason=None if tcp_enabled else _disabled_note_for_modality(self.config, modality),
             visual_text_cue_enabled=self.config.visual_text_cue_enabled,
             original_planned_onset_ms=original_planned_onset_ms,
             adjusted_onset_ms=adjusted_onset_ms,
@@ -424,9 +434,7 @@ class SimpleHapticSender:
         if tcp_enabled:
             self._submit_tcp(record, modality=modality)
             print(
-                "[TCP HAPTIC] "
-                f"event={record.event_name} modality={record.modality} "
-                f"payload={_tcp_payload_preview(record)} status={record.send_status}"
+                _haptic_console_line(record)
             )
         self.records.append(record)
         return record
@@ -434,17 +442,17 @@ class SimpleHapticSender:
     def _start_tcp_workers(self) -> None:
         if self.config.disabled_mode:
             return
-        if self.config.vibration_enabled:
+        if self.config.vibration_enabled and self.config.vibration_tcp_enabled:
             self._vibration_worker = self._start_vibration_worker()
-        if self.config.matrix_enabled:
+        if self.config.matrix_enabled and self.config.matrix_tcp_enabled:
             self._matrix_worker = self._start_matrix_worker()
 
     def _start_vibration_worker(self) -> VibrationTcpLineWorker | None:
         worker = VibrationTcpLineWorker(
-            host=self.config.vibration_tcp_host,
-            port=self.config.vibration_tcp_port,
-            connect_timeout_s=self.config.connect_timeout_s,
-            send_timeout_s=self.config.send_timeout_s,
+            host=self.config.vibration_host,
+            port=self.config.vibration_port,
+            connect_timeout_s=self.config.vibration_connect_timeout_s,
+            send_timeout_s=self.config.vibration_send_timeout_s,
             max_queue_size=self.config.max_queue_size,
             socket_factory=self.config.vibration_socket_factory,
         )
@@ -452,7 +460,7 @@ class SimpleHapticSender:
             worker.start()
             return worker
         except VibrationHapticConnectionError as exc:
-            if self.config.vibration_tcp_required:
+            if self.config.vibration_required:
                 raise
             self._connect_warnings.append(str(exc))
             print(f"[TCP HAPTIC WARNING] {exc}")
@@ -460,10 +468,10 @@ class SimpleHapticSender:
 
     def _start_matrix_worker(self) -> MatrixTcpWorker | None:
         worker = MatrixTcpWorker(
-            host=self.config.matrix_tcp_host,
-            port=self.config.matrix_tcp_port,
-            connect_timeout_s=self.config.connect_timeout_s,
-            send_timeout_s=self.config.send_timeout_s,
+            host=self.config.matrix_host,
+            port=self.config.matrix_port,
+            connect_timeout_s=self.config.matrix_connect_timeout_s,
+            send_timeout_s=self.config.matrix_send_timeout_s,
             max_queue_size=self.config.max_queue_size,
             latest_only=self.config.matrix_latest_only,
             socket_factory=self.config.matrix_socket_factory,
@@ -472,7 +480,7 @@ class SimpleHapticSender:
             worker.start()
             return worker
         except MatrixHapticConnectionError as exc:
-            if self.config.matrix_tcp_required:
+            if self.config.matrix_required:
                 raise
             self._connect_warnings.append(str(exc))
             print(f"[TCP HAPTIC WARNING] {exc}")
@@ -502,6 +510,15 @@ class SimpleHapticSender:
             record.tcp_queued = bool(queued)
             return
 
+    def _tcp_enabled_for_modality(self, modality: str, target_enabled: bool) -> bool:
+        if not target_enabled or self.config.disabled_mode:
+            return False
+        if modality == "vibration":
+            return bool(self.config.vibration_tcp_enabled)
+        if modality == "matrix":
+            return bool(self.config.matrix_tcp_enabled)
+        return False
+
 
 def _validate_channel_list(channels: list[int] | tuple[int, ...]) -> list[int]:
     result: list[int] = []
@@ -518,11 +535,14 @@ def _vibration_command_id(record: HapticEventRecord) -> int:
     if record.command_id is not None:
         return int(record.command_id)
     label_map = {
+        "contact": 1,
         "contact_enter": 1,
+        "release": 2,
         "contact_exit": 2,
+        "slip": 3,
         "slip_start": 3,
     }
-    command = label_map.get(str(record.command_label or ""))
+    command = label_map.get(str(record.command_label or record.event_name or ""))
     if command is None:
         raise ValueError(
             f"vibration event {record.event_name} requires command_id for real TCP."
@@ -537,3 +557,30 @@ def _tcp_payload_preview(record: HapticEventRecord) -> str:
         return str(_vibration_command_id(record))
     except ValueError:
         return str(record.command_label or "")
+
+
+def _disabled_note_for_modality(config: SimpleHapticSenderConfig, modality: str) -> str:
+    if config.disabled_mode:
+        return "disabled_mode_no_tcp"
+    if modality == "vibration" and not config.vibration_tcp_enabled:
+        return "vibration_tcp_disabled"
+    if modality == "matrix" and not config.matrix_tcp_enabled:
+        return "matrix_tcp_disabled"
+    return "haptic_modality_disabled"
+
+
+def _haptic_console_line(record: HapticEventRecord) -> str:
+    tcp_status = "queued" if record.tcp_queued else record.send_status
+    if record.modality == "vibration":
+        return (
+            "[HAPTIC] "
+            f"event={record.event_name} modality=vibration "
+            f"command_id={_vibration_command_id(record)} tcp={tcp_status}"
+        )
+    if record.modality == "matrix":
+        return (
+            "[HAPTIC] "
+            f"event={record.event_name} modality=matrix "
+            f"channels={record.channel_list} tcp={tcp_status}"
+        )
+    return f"[HAPTIC] event={record.event_name} modality={record.modality} tcp={tcp_status}"

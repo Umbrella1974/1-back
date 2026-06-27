@@ -388,19 +388,29 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             0.15,
         ),
     )
+    vibration_tcp_config = config.get("vibration_tcp") or {}
+    matrix_tcp_config = config.get("matrix_tcp") or {}
+    vibration_enabled = bool(haptic_config.get("vibration_enabled", False))
+    matrix_enabled = bool(haptic_config.get("matrix_enabled", False))
+    vibration_tcp_enabled = vibration_enabled and bool(vibration_tcp_config.get("enabled", False))
+    matrix_tcp_enabled = matrix_enabled and bool(matrix_tcp_config.get("enabled", False))
     sender_config = SimpleHapticSenderConfig(
-        vibration_enabled=bool(haptic_config.get("vibration_enabled", False)),
-        matrix_enabled=bool(haptic_config.get("matrix_enabled", False)),
+        vibration_enabled=vibration_enabled,
+        matrix_enabled=matrix_enabled,
         visual_text_cue_enabled=bool(haptic_config.get("visual_text_cue_enabled", False)),
-        disabled_mode=bool(haptic_config.get("disabled_mode", True)),
-        vibration_tcp_host=str(haptic_config.get("vibration_tcp_host", "127.0.0.1")),
-        vibration_tcp_port=int(haptic_config.get("vibration_tcp_port", 12345)),
-        matrix_tcp_host=str(haptic_config.get("matrix_tcp_host", "127.0.0.1")),
-        matrix_tcp_port=int(haptic_config.get("matrix_tcp_port", 12346)),
-        vibration_tcp_required=bool(haptic_config.get("vibration_tcp_required", False)),
-        matrix_tcp_required=bool(haptic_config.get("matrix_tcp_required", False)),
-        connect_timeout_s=float(haptic_config.get("connect_timeout_s", 1.0)),
-        send_timeout_s=float(haptic_config.get("send_timeout_s", 0.5)),
+        disabled_mode=not (vibration_tcp_enabled or matrix_tcp_enabled),
+        vibration_tcp_enabled=vibration_tcp_enabled,
+        vibration_required=bool(vibration_tcp_config.get("required", False)),
+        vibration_host=str(vibration_tcp_config.get("host", "127.0.0.1")),
+        vibration_port=int(vibration_tcp_config.get("port", 12346)),
+        matrix_tcp_enabled=matrix_tcp_enabled,
+        matrix_required=bool(matrix_tcp_config.get("required", False)),
+        matrix_host=str(matrix_tcp_config.get("host", "127.0.0.1")),
+        matrix_port=int(matrix_tcp_config.get("port", 12345)),
+        vibration_connect_timeout_s=float(vibration_tcp_config.get("connect_timeout_s", 2.0)),
+        vibration_send_timeout_s=float(vibration_tcp_config.get("send_timeout_s", 0.2)),
+        matrix_connect_timeout_s=float(matrix_tcp_config.get("connect_timeout_s", 2.0)),
+        matrix_send_timeout_s=float(matrix_tcp_config.get("send_timeout_s", 0.2)),
         max_queue_size=int(haptic_config.get("max_queue_size", 128)),
         matrix_latest_only=bool(haptic_config.get("matrix_latest_only", True)),
     )

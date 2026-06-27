@@ -190,13 +190,14 @@ def test_enabled_vibration_sender_queues_vendor_tcp_payload(tmp_path) -> None:
             vibration_enabled=True,
             matrix_enabled=False,
             disabled_mode=False,
+            vibration_tcp_enabled=True,
             vibration_socket_factory=_socket_factory(sent_payloads),
         ),
         session_id="tcp-vibration",
         wall_time_fn=lambda: 0.0,
     )
 
-    record = sender.send_contact(command_id=1, duration_ms=150)
+    record = sender.send_contact(duration_ms=150)
     sender.write_csv(tmp_path / "haptic_events.csv")
 
     assert sent_payloads == [b"1\n"]
@@ -214,6 +215,7 @@ def test_enabled_matrix_sender_queues_vendor_tcp_packet(tmp_path) -> None:
             vibration_enabled=False,
             matrix_enabled=True,
             disabled_mode=False,
+            matrix_tcp_enabled=True,
             matrix_socket_factory=_socket_factory(sent_payloads),
         ),
         session_id="tcp-matrix",
@@ -235,7 +237,8 @@ def test_tcp_not_required_connection_failure_records_not_connected() -> None:
         SimpleHapticSenderConfig(
             vibration_enabled=True,
             disabled_mode=False,
-            vibration_tcp_required=False,
+            vibration_tcp_enabled=True,
+            vibration_required=False,
             vibration_socket_factory=_failing_socket_factory,
         ),
         session_id="tcp-warning",
@@ -256,16 +259,56 @@ def test_tcp_required_connection_failure_raises() -> None:
             SimpleHapticSenderConfig(
                 vibration_enabled=True,
                 disabled_mode=False,
-                vibration_tcp_required=True,
+                vibration_tcp_enabled=True,
+                vibration_required=True,
                 vibration_socket_factory=_failing_socket_factory,
             ),
             session_id="tcp-required",
         )
 
 
+def test_tcp_channel_disabled_does_not_connect() -> None:
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=True,
+            disabled_mode=False,
+            vibration_tcp_enabled=False,
+            vibration_socket_factory=_failing_socket_factory,
+        ),
+        session_id="tcp-disabled-channel",
+    )
+
+    record = sender.send_contact(duration_ms=150)
+
+    assert record.tcp_enabled is False
+    assert record.tcp_queued is False
+    assert record.send_status == "disabled"
+    assert record.not_sent_reason == "vibration_tcp_disabled"
+
+
+def test_close_stops_and_closes_worker_socket() -> None:
+    sockets: list[_FakeSocket] = []
+
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=True,
+            disabled_mode=False,
+            vibration_tcp_enabled=True,
+            vibration_socket_factory=_socket_factory([], sockets=sockets),
+        ),
+        session_id="tcp-close",
+    )
+
+    sender.close()
+
+    assert sockets
+    assert sockets[0].closed is True
+
+
 class _FakeSocket:
     def __init__(self, sent_payloads: list[bytes]) -> None:
         self.sent_payloads = sent_payloads
+        self.closed = False
 
     def settimeout(self, timeout: float) -> None:
         self.timeout = timeout
@@ -274,12 +317,15 @@ class _FakeSocket:
         self.sent_payloads.append(bytes(payload))
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
-def _socket_factory(sent_payloads: list[bytes]):
+def _socket_factory(sent_payloads: list[bytes], *, sockets: list[_FakeSocket] | None = None):
     def factory(address, timeout):
-        return _FakeSocket(sent_payloads)
+        socket = _FakeSocket(sent_payloads)
+        if sockets is not None:
+            sockets.append(socket)
+        return socket
 
     return factory
 
