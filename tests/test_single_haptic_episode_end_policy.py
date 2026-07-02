@@ -79,6 +79,79 @@ def test_post_release_complete_counts_as_release_end_reason() -> None:
     assert _is_release_end_reason("duration_elapsed") is False
 
 
+def test_post_release_continue_nback_flag_controls_nback_after_release(tmp_path) -> None:
+    stopped_result, stopped_haptic_rows = _run_post_release_case(
+        tmp_path,
+        session_id="post-release-nback-stopped",
+        post_release_continue_nback=False,
+    )
+    continued_result, continued_haptic_rows = _run_post_release_case(
+        tmp_path,
+        session_id="post-release-nback-continued",
+        post_release_continue_nback=True,
+    )
+
+    assert stopped_result.end_reason == "haptic_release_post_recording_complete"
+    assert continued_result.end_reason == "haptic_release_post_recording_complete"
+    assert stopped_result.total_pinch_samples == continued_result.total_pinch_samples
+    assert stopped_result.post_release_pinch_samples >= 3
+    assert continued_result.post_release_pinch_samples >= 3
+    assert [row["event_name"] for row in stopped_haptic_rows] == ["contact", "release"]
+    assert [row["event_name"] for row in continued_haptic_rows] == ["contact", "release"]
+    assert continued_result.total_nback_trials > stopped_result.total_nback_trials
+
+
+def _run_post_release_case(
+    tmp_path,
+    *,
+    session_id: str,
+    post_release_continue_nback: bool,
+):
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    timeline = NBackTimeline(
+        NBackConfig(
+            num_trials=20,
+            fixation_duration_ms=0,
+            stimulus_duration_ms=20,
+            isi_min_ms=20,
+            isi_max_ms=20,
+        ),
+        sequence=[index % 10 for index in range(20)],
+        isi_ms=[20] * 20,
+        wall_time_fn=lambda: 0.0,
+    )
+
+    result = run_pinch_haptic_1back_core(
+        [
+            _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
+            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.08),
+            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
+            _sample(session_id, frame_index=4, monotonic_ms=1100.0, distance=0.02),
+            _sample(session_id, frame_index=5, monotonic_ms=1200.0, distance=0.02),
+            _sample(session_id, frame_index=6, monotonic_ms=1300.0, distance=0.02),
+        ],
+        calibration=_calibration(),
+        plan=_plan(),
+        logger=logger,
+        nback_timeline=timeline,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        session_end_policy=SessionEndPolicy(
+            allow_multiple_haptic_trials=False,
+            finish_active_haptic_before_exit=True,
+            post_release_recording_ms=300,
+            post_release_continue_nback=post_release_continue_nback,
+        ),
+        start_monotonic_ms=1000.0,
+        end_monotonic_ms=2000.0,
+        tick_interval_ms=10.0,
+    )
+
+    with logger.paths.haptic_events_csv.open(newline="", encoding="utf-8") as handle:
+        haptic_rows = list(csv.DictReader(handle))
+    return result, haptic_rows
+
+
 def _plan():
     return haptic_plan_config_from_dict(
         {
