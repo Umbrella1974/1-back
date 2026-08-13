@@ -1,4 +1,4 @@
-plan_id: only-motor
+plan_id: only-motor-5
 description: Contact first, then slip-left-right-up-down, release last.
 random_seed: 123
 

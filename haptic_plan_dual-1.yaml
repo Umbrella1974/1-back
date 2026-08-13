@@ -1,7 +1,6 @@
-plan_id: only-motor-1
-description: Contact first, then slip-left-right-up-down, release last.
+plan_id: dual-1
+description: Contact first, then slip-left-right, release last.
 random_seed: 123
-
 
 timing:
   contact_onset_delay_ms: [4000, 7000]
@@ -18,7 +17,7 @@ events:
     onset_delay_ms: [4000, 7000]
     require_wrist_neutral_before_emit: true
     wrist_neutral_timeout_ms: 3000
-    
+
   - name: slip
     modality: vibration
     command_label: slip
@@ -27,12 +26,11 @@ events:
     trigger_zone: closed_zone
     nback_trial_window: [6,13]
     require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000    
+    wrist_neutral_timeout_ms: 3000  
 
   - name: up
-    modality: vibration
-    command_label: wrist_up
-    command_id: 8
+    modality: matrix
+    channel_list: [82, 84 ,87]
     duration_ms: 1000
     trigger_zone: closed_zone
     nback_trial_window: [13,20]
@@ -40,36 +38,31 @@ events:
     wrist_neutral_timeout_ms: 3000    
 
   - name: right
-    modality: vibration
-    command_label: wrist_right
-    command_id: 9
+    modality: matrix
+    channel_list: [87, 88, 89]
     duration_ms: 1000
     trigger_zone: closed_zone
     nback_trial_window: [20,27]
     require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000    
-
+    wrist_neutral_timeout_ms: 3000
 
   - name: left
-    modality: vibration
-    command_label: wrist_left
-    command_id: 5
+    modality: matrix
+    channel_list: [81, 82, 83]
     duration_ms: 1000
     trigger_zone: closed_zone
     nback_trial_window: [27,34]
     require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000    
-
+    wrist_neutral_timeout_ms: 3000 
 
   - name: left
-    modality: vibration
-    command_label: wrist_left
-    command_id: 5
+    modality: matrix
+    channel_list: [81, 82, 83]
     duration_ms: 1000
     trigger_zone: closed_zone
     nback_trial_window: [34,41]
     require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000    
+    wrist_neutral_timeout_ms: 3000 
 
   - name: release
     modality: vibration
@@ -79,7 +72,7 @@ events:
     trigger_zone: closed_zone
     nback_trial_window: [41,49]
     require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000    
+    wrist_neutral_timeout_ms: 3000
 
 zones:
   open_zone:

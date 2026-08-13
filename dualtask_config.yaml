@@ -7,7 +7,7 @@ session:
   duration_s: 140
   #
   #
-  haptic_plan_config: haptic_plan_config_example.yaml
+  haptic_plan_config: haptic_plan_dual-1.yaml
   #
   #
   end_policy: stop_on_haptic_release
