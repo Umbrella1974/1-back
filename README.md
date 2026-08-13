@@ -32,6 +32,7 @@ python run_pinch_haptic_1back.py --config dualtask_config.yaml
 
 ```yaml
 session:
+  session_seed: null
   duration_s: 140
   haptic_plan_config: haptic_plan_config_example.yaml
   end_policy: stop_on_haptic_release
@@ -54,6 +55,14 @@ session:
 - `post_release_recording_ms: 3000` 表示 release 后至少继续记录 3 秒；如果 1-back 还没完成，会继续记录到 1-back 完成。
 
 这里的试次号是 1-based：`release_nback_trial_window: [40, 50]` 表示用户理解的第 40 到第 50 试次，不是 Python 内部的 index 39-49。
+
+`session_seed` 用来控制整轮实验的可复现随机性：
+
+- `session_seed: null`：每次运行自动生成一个 master seed。
+- `session_seed: 381274`：使用指定 master seed 复现这一轮。
+- 程序会从 master seed 派生独立的 `haptic_seed` 和 `nback_seed`，避免 haptic gap 抽样和 1-back 序列共用同一个随机流。
+- `summary.json` 会同时记录 `session_seed`、`haptic_seed`、`nback_seed`、`haptic_plan_template_random_seed` 和实际使用的 `haptic_plan_random_seed`。
+- haptic plan YAML 里的 `random_seed` 现在作为模板 seed 保留用于审计；正式运行时会被 session-level 派生出的 `haptic_seed` 覆盖。
 
 `duration_s` 需要足够长。当前 1-back 单试次约为：
 
@@ -207,7 +216,7 @@ wrist_rotation:
 
 - `haptic_events.csv` 是否有 `slip_end command_id=4`
 - `summary.json` 的 `end_reason`
-- `summary.json` 的 `haptic_plan_id` 和 `haptic_plan_random_seed`
+- `summary.json` 的 `session_seed`、`haptic_seed`、`nback_seed`、`haptic_plan_id` 和 `haptic_plan_random_seed`
 - `summary.json` 的 wrist rotation 字段
 - `nback_events.csv` 是否符合 post-release 期间的预期行为
 
@@ -243,6 +252,32 @@ python -m pytest tests\test_wrist_rotation.py tests\test_simple_haptic_sender_tc
 python -m pytest
 ```
 
+## Cue Cycle 分析
+
+采集结束后可以基于现有 CSV 生成每个 tactile cue 的动作周期指标：
+
+```powershell
+python analyze_cue_cycles.py outputs\你的session目录
+```
+
+会写出：
+
+- `cue_cycle_metrics.csv`
+- `cue_cycle_summary.json`
+
+当前算法：
+
+- cue onset 使用 `haptic_events.csv` 的 `actual_emit_ms`。
+- tactile response detection 只使用 `wrist_rotation_timeseries.csv`，不使用 `nback_events.csv`。
+- 先找 cue 后第一个稳定有效动作。
+- 如果方向错误，继续找第一次正确动作并记录 correction。
+- 正确/最终动作之后，再找第一次稳定 `neutral` return。
+- 默认稳定窗口是 `150ms`，默认 response timeout 是 `5000ms`。
+
+`cue_cycle_metrics.csv` 包含 `feedback_condition`、`task_condition`、`plan_id`、`event_position`、`emit_trial_number`、`next_cue_onset_ms`、`response_timeout_ms`、RT、correction time、return time 和 full cycle 等字段。
+
+`nback_events.csv` 暂时不参与 tactile response detection，只用于后续 dual-task performance 分析。
+
 ## 不应修改的边界
 
 除非有明确新需求，不要修改：
@@ -260,3 +295,5 @@ python -m pytest
 - 你后续写好 3 套 haptic plan 后，需要统一检查每套 plan 的 `plan_id`、`random_seed`、事件顺序、modality、TCP 开关是否和实验条件匹配。
 - 建议保留一套快速 debug plan，把所有 gap 缩短，用来先验证 TCP、日志字段、trial window 和软回正 gate。
 - 如果要把所有 haptic 条件做成正式实验批量入口，可以再新增一个小的条件选择层；当前最小做法仍是每次在 `dualtask_config.yaml` 里切换 `haptic_plan_config`。
+- `analyze_cue_cycles.py` 现在默认 `left/right/up/down` 才有明确正确方向；`slip` 会作为 cue 保留，但暂时没有 expected action，后面需要根据实验定义补 slip 的正确响应规则。
+- cue cycle 分析目前是事后脚本，没有写回运行时主流程；如果正式流程需要自动生成分析结果，可以在 session 结束后再接入。

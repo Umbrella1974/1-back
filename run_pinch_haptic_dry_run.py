@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,6 +19,7 @@ from pinch_calibration import (
     calibrate_from_samples,
     classify_pinch_zone,
 )
+from session_seeds import session_seed_info_from_config
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
 from vendor_exp2_abc.live_raw_stream import LiveRawFrame, LiveRawStreamServer
 
@@ -102,6 +103,7 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
     calibration_config_payload = _object_section(config, "calibration")
     haptic_config = _object_section(config, "haptic")
     sync_config = _object_section(config, "sync")
+    seed_info = session_seed_info_from_config(session_config)
 
     session_id = make_session_id(session_config.get("session_id_prefix", "pinch_haptic_dry_run"))
     logger = DualTaskLogger(
@@ -110,6 +112,8 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
     )
     plan_path = Path(session_config.get("haptic_plan_config", "haptic_plan_config_example.yaml"))
     plan = load_haptic_plan_config(plan_path)
+    haptic_plan_template_random_seed = plan.random_seed
+    plan = replace(plan, random_seed=seed_info.haptic_seed)
     parser = ManusOnlyPinchInput(
         ManusPinchInputConfig(
             thumb_node_id=pinch_config.get("thumb_node_id", 4),
@@ -215,7 +219,9 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
                 "config_path": str(config_path),
                 "haptic_plan_config_path": str(plan_path),
                 "haptic_plan_id": plan.plan_id,
+                "haptic_plan_template_random_seed": haptic_plan_template_random_seed,
                 "haptic_plan_random_seed": plan.random_seed,
+                **seed_info.to_dict(),
                 "start_wall_time_iso": start_wall,
                 "end_wall_time_iso": end_wall,
                 "duration_s": session_config.get("duration_s", 60),

@@ -3,6 +3,7 @@ session:
   output_root: outputs
   participant_id: ""
   condition_id: ""
+  session_seed: null
   duration_s: 140
   #
   #

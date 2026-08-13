@@ -45,6 +45,7 @@ from run_pinch_haptic_dry_run import (
     _wait_for_manus_client,
     load_dualtask_config,
 )
+from session_seeds import session_seed_info_from_config
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
 from vendor_exp2_abc.live_raw_stream import LiveRawStreamServer
 from wrist_rotation import (
@@ -481,6 +482,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     haptic_debug_config = _haptic_debug_config_from_dualtask_config(config)
     session_end_policy = _session_end_policy_from_config(session_config)
     feedback_config = _haptic_feedback_display_from_dualtask_config(config)
+    seed_info = session_seed_info_from_config(session_config)
 
     session_id = make_session_id(session_config.get("session_id_prefix", "pinch_haptic_1back"))
     logger = DualTaskLogger(
@@ -489,6 +491,8 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     )
     plan_path = Path(session_config.get("haptic_plan_config", "haptic_plan_config_example.yaml"))
     plan = load_haptic_plan_config(plan_path)
+    haptic_plan_template_random_seed = plan.random_seed
+    plan = replace(plan, random_seed=seed_info.haptic_seed)
     plan = _plan_with_global_haptic_defaults(plan, config.get("haptic_defaults"))
     parser = ManusOnlyPinchInput(
         ManusPinchInputConfig(
@@ -541,7 +545,11 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         max_haptic_delay_ms=sync_config.get("max_haptic_delay_ms", 500),
         if_cannot_avoid=str(sync_config.get("if_cannot_avoid", "log_warning_and_send")),
     )
-    nback_timeline = NBackTimeline(_nback_config_from_dualtask_config(config))
+    nback_config = replace(
+        _nback_config_from_dualtask_config(config),
+        random_seed=seed_info.nback_seed,
+    )
+    nback_timeline = NBackTimeline(nback_config)
 
     warnings: list[str] = []
     errors: list[str] = []
@@ -679,7 +687,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "config_path": str(config_path),
                 "haptic_plan_config_path": str(plan_path),
                 "haptic_plan_id": plan.plan_id,
+                "haptic_plan_template_random_seed": haptic_plan_template_random_seed,
                 "haptic_plan_random_seed": plan.random_seed,
+                **seed_info.to_dict(),
                 "start_wall_time_iso": start_wall,
                 "end_wall_time_iso": end_wall,
                 "output_files": logger.paths.to_dict(),
