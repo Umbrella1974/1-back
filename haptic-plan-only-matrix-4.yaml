@@ -43,11 +43,11 @@ events:
         channel_list: [81, 85, 88]
       - offset_ms: 250
         channel_list: [83, 86, 89]
-    duration_ms: 2000
+    duration_ms: 3000
     trigger_zone: closed_zone
     nback_trial_window: [13,20]
     require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000
+    wrist_neutral_timeout_ms: 2000
 
   - name: down
     modality: matrix
@@ -73,11 +73,11 @@ events:
         channel_list: [81, 85, 88]
       - offset_ms: 250
         channel_list: [83, 86, 89]
-    duration_ms: 2000
+    duration_ms: 3000
     trigger_zone: closed_zone
     nback_trial_window: [27,34]
     require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000
+    wrist_neutral_timeout_ms: 2000
 
   - name: right
     modality: matrix
