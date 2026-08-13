@@ -17,3 +17,5 @@ logs/
 
 # VS Code
 .vscode/
+
+*.pyc
