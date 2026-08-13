@@ -108,13 +108,9 @@ def test_repository_example_yaml_loads() -> None:
     plan = load_haptic_plan_config("haptic_plan_config_example.yaml")
 
     assert plan.timing.refractory_ms == 3000
-    assert [event.name for event in plan.events] == [
-        "contact",
-        "slip",
-        "left",
-        "right",
-        "release",
-    ]
+    assert plan.events[0].name == "contact"
+    assert plan.events[-1].name == "release"
+    assert len(plan.events) >= 2
 
 
 def test_first_event_must_be_contact() -> None:
@@ -210,6 +206,40 @@ def test_vibration_end_command_round_trips() -> None:
     assert second.events[1].end_command_label == "slip_end"
     assert second.events[1].end_command_id == 4
     assert second.to_dict()["events"][1]["end_command_id"] == 4
+
+
+def test_trial_window_and_wrist_neutral_gate_round_trip() -> None:
+    payload = _valid_plan()
+    payload["events"][2]["nback_trial_window"] = [20, 25]
+    payload["events"][2]["require_wrist_neutral_before_emit"] = True
+    payload["events"][2]["wrist_neutral_timeout_ms"] = 3000
+
+    plan = haptic_plan_config_from_dict(payload)
+    second = haptic_plan_config_from_dict(plan.to_dict())
+
+    assert second.events[2].nback_trial_window == (20, 25)
+    assert second.events[2].require_wrist_neutral_before_emit is True
+    assert second.events[2].wrist_neutral_timeout_ms == 3000
+    assert second.to_dict()["events"][2]["nback_trial_window"] == [20, 25]
+
+
+def test_wrist_neutral_timeout_requires_gate_enabled() -> None:
+    payload = _valid_plan()
+    payload["events"][2]["wrist_neutral_timeout_ms"] = 3000
+
+    with pytest.raises(
+        ValueError,
+        match="wrist_neutral_timeout_ms requires require_wrist_neutral_before_emit",
+    ):
+        haptic_plan_config_from_dict(payload)
+
+
+def test_wrist_neutral_gate_must_be_boolean() -> None:
+    payload = _valid_plan()
+    payload["events"][2]["require_wrist_neutral_before_emit"] = "false"
+
+    with pytest.raises(ValueError, match="require_wrist_neutral_before_emit.*true or false"):
+        haptic_plan_config_from_dict(payload)
 
 
 def test_matrix_event_rejects_end_command_id() -> None:

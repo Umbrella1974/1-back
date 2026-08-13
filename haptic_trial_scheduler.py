@@ -95,6 +95,23 @@ class ScheduledHapticEvent:
     sync_warning: str = ""
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
+    nback_trial_window: tuple[int, int] | None = None
+    require_wrist_neutral_before_emit: bool = False
+    wrist_neutral_timeout_ms: int | None = None
+    time_ready_ms: float | None = None
+    actual_emit_ms: float | None = None
+    planned_emit_trial_number: int | None = None
+    emit_trial_number: int | None = None
+    trial_gate_window: tuple[int, int] | None = None
+    trial_gate_open_trial: int | None = None
+    held_by_trial_gate: bool = False
+    late_window_warning: str = ""
+    wrist_neutral_gate_required: bool = False
+    held_by_wrist_neutral_gate: bool = False
+    wrist_neutral_gate_passed: bool | None = None
+    wrist_neutral_wait_ms: float | None = None
+    wrist_lr_class_at_emit: str = ""
+    wrist_up_down_class_at_emit: str = ""
     timing_note: str = ""
     end_reason: str = ""
     haptic_episode_completed: bool = False
@@ -102,6 +119,8 @@ class ScheduledHapticEvent:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["channel_list"] = list(self.channel_list)
+        if self.nback_trial_window is not None:
+            payload["nback_trial_window"] = list(self.nback_trial_window)
         return payload
 
 
@@ -392,6 +411,9 @@ class HapticTrialScheduler:
             sync_warning=adjustment.sync_warning,
             sampled_delay_ms=pending.sampled_delay_ms,
             sampled_gap_ms=pending.sampled_gap_ms,
+            nback_trial_window=event.nback_trial_window,
+            require_wrist_neutral_before_emit=event.require_wrist_neutral_before_emit,
+            wrist_neutral_timeout_ms=event.wrist_neutral_timeout_ms,
             timing_note=pending.timing_note,
             end_reason="haptic_release" if event.name == "release" else "",
             haptic_episode_completed=event.name == "release",

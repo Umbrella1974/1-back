@@ -155,7 +155,142 @@ def test_release_is_held_until_configured_nback_trial_and_nback_completes(tmp_pa
     assert result.haptic_policy_warnings == ()
     assert [row["event_name"] for row in rows] == ["contact", "release"]
     assert float(rows[1]["monotonic_ms"]) == timeline.trials[39].fixation_onset_monotonic_ms
-    assert "release_held_until_nback_trial" in rows[1]["timing_note"]
+    assert rows[1]["time_ready_ms"] != rows[1]["actual_emit_ms"]
+    assert rows[1]["planned_emit_trial_number"] == "1"
+    assert rows[1]["emit_trial_number"] == "40"
+    assert rows[1]["trial_gate_window"] == "[40,50]"
+    assert rows[1]["trial_gate_open_trial"] == "40"
+    assert rows[1]["held_by_trial_gate"] == "True"
+    assert "held_by_trial_gate" in rows[1]["timing_note"]
+
+
+def test_non_release_event_can_be_held_by_nback_trial_window(tmp_path) -> None:
+    session_id = "event-held-by-trial-window"
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    timeline = _timeline(session_id=session_id, num_trials=10)
+
+    result = run_pinch_haptic_1back_core(
+        [
+            _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
+            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.08),
+            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
+            _sample(session_id, frame_index=4, monotonic_ms=2000.0, distance=0.02),
+        ],
+        calibration=_calibration(),
+        plan=_plan_with_cue(
+            {
+                "nback_trial_window": [5, 6],
+            }
+        ),
+        logger=logger,
+        nback_timeline=timeline,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        session_end_policy=SessionEndPolicy(
+            allow_multiple_haptic_trials=False,
+            finish_active_haptic_before_exit=True,
+        ),
+        start_monotonic_ms=1000.0,
+        end_monotonic_ms=1200.0,
+        tick_interval_ms=10.0,
+    )
+
+    rows = _haptic_rows(logger)
+    cue = rows[1]
+
+    assert result.haptic_policy_warnings == ()
+    assert [row["event_name"] for row in rows] == ["contact", "cue", "release"]
+    assert float(cue["time_ready_ms"]) < float(cue["actual_emit_ms"])
+    assert cue["planned_emit_trial_number"] == "1"
+    assert cue["emit_trial_number"] == "5"
+    assert cue["trial_gate_window"] == "[5,6]"
+    assert cue["trial_gate_open_trial"] == "5"
+    assert cue["held_by_trial_gate"] == "True"
+    assert cue["late_window_warning"] == ""
+
+
+def test_event_after_trial_window_emits_with_warning(tmp_path) -> None:
+    session_id = "event-late-window-warning"
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    timeline = _timeline(session_id=session_id, num_trials=10)
+
+    result = run_pinch_haptic_1back_core(
+        [
+            _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
+            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.08),
+            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
+            _sample(session_id, frame_index=4, monotonic_ms=1400.0, distance=0.02),
+        ],
+        calibration=_calibration(),
+        plan=_plan_with_cue(
+            {
+                "nback_trial_window": [2, 3],
+                "onset_gap_after_previous_ms": [400, 400],
+            }
+        ),
+        logger=logger,
+        nback_timeline=timeline,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        session_end_policy=SessionEndPolicy(
+            allow_multiple_haptic_trials=False,
+            finish_active_haptic_before_exit=True,
+        ),
+        start_monotonic_ms=1000.0,
+        end_monotonic_ms=1200.0,
+        tick_interval_ms=10.0,
+    )
+
+    cue = _haptic_rows(logger)[1]
+
+    assert cue["planned_emit_trial_number"] == "5"
+    assert cue["emit_trial_number"] == "5"
+    assert cue["held_by_trial_gate"] == "False"
+    assert cue["late_window_warning"] == "cue_after_nback_trial_window_2_3:trial_5"
+    assert result.haptic_policy_warnings == (
+        "cue_after_nback_trial_window_2_3:trial_5",
+    )
+
+
+def test_wrist_neutral_gate_times_out_and_marks_unclean_emit(tmp_path) -> None:
+    session_id = "wrist-neutral-timeout"
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    timeline = _timeline(session_id=session_id, num_trials=10)
+
+    run_pinch_haptic_1back_core(
+        [
+            _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
+            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.08),
+            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
+            _sample(session_id, frame_index=4, monotonic_ms=1100.0, distance=0.02),
+        ],
+        calibration=_calibration(),
+        plan=_plan_with_cue(
+            {
+                "require_wrist_neutral_before_emit": True,
+                "wrist_neutral_timeout_ms": 30,
+            }
+        ),
+        logger=logger,
+        nback_timeline=timeline,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        session_end_policy=SessionEndPolicy(
+            allow_multiple_haptic_trials=False,
+            finish_active_haptic_before_exit=True,
+        ),
+        start_monotonic_ms=1000.0,
+        end_monotonic_ms=1060.0,
+        tick_interval_ms=10.0,
+    )
+
+    cue = _haptic_rows(logger)[1]
+
+    assert cue["wrist_neutral_gate_required"] == "True"
+    assert cue["held_by_wrist_neutral_gate"] == "True"
+    assert cue["wrist_neutral_gate_passed"] == "False"
+    assert float(cue["wrist_neutral_wait_ms"]) >= 30.0
+    assert "held_by_wrist_neutral_gate" in cue["timing_note"]
 
 
 def test_prerelease_deadline_warning_when_plan_is_too_slow(tmp_path) -> None:
@@ -259,6 +394,73 @@ def _run_post_release_case(
     with logger.paths.haptic_events_csv.open(newline="", encoding="utf-8") as handle:
         haptic_rows = list(csv.DictReader(handle))
     return result, haptic_rows
+
+
+def _haptic_rows(logger: DualTaskLogger) -> list[dict[str, str]]:
+    with logger.paths.haptic_events_csv.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _timeline(*, session_id: str, num_trials: int) -> NBackTimeline:
+    timeline = NBackTimeline(
+        NBackConfig(
+            num_trials=num_trials,
+            fixation_duration_ms=0,
+            stimulus_duration_ms=20,
+            isi_min_ms=80,
+            isi_max_ms=80,
+        ),
+        sequence=[index % 10 for index in range(num_trials)],
+        isi_ms=[80] * num_trials,
+        wall_time_fn=lambda: 0.0,
+    )
+    return timeline
+
+
+def _plan_with_cue(cue_overrides: dict) -> object:
+    cue = {
+        "name": "cue",
+        "modality": "matrix",
+        "channel_list": [1, 2, 3],
+        "duration_ms": 1,
+        "trigger_zone": "closed_zone",
+        "onset_gap_after_previous_ms": [0, 0],
+    }
+    cue.update(cue_overrides)
+    return haptic_plan_config_from_dict(
+        {
+            "plan_id": "with_cue",
+            "description": "",
+            "random_seed": 1,
+            "timing": {
+                "contact_onset_delay_ms": [0, 0],
+                "inter_event_gap_ms": [0, 0],
+                "refractory_ms": 0,
+            },
+            "events": [
+                {
+                    "name": "contact",
+                    "modality": "vibration",
+                    "command_label": "contact_enter",
+                    "duration_ms": 1,
+                    "trigger_zone": "open_zone",
+                },
+                cue,
+                {
+                    "name": "release",
+                    "modality": "vibration",
+                    "command_label": "contact_exit",
+                    "duration_ms": 1,
+                    "trigger_zone": "closed_zone",
+                    "onset_gap_after_previous_ms": [0, 0],
+                },
+            ],
+            "zones": {
+                "open_zone": {"lower": "auto_a", "upper": "auto_max"},
+                "closed_zone": {"lower": "auto_min", "upper": "auto_a"},
+            },
+        }
+    )
 
 
 def _plan():

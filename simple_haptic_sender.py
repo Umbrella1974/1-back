@@ -66,6 +66,20 @@ HAPTIC_EVENT_FIELDS = [
     "sync_warning",
     "sampled_delay_ms",
     "sampled_gap_ms",
+    "time_ready_ms",
+    "actual_emit_ms",
+    "planned_emit_trial_number",
+    "emit_trial_number",
+    "trial_gate_window",
+    "trial_gate_open_trial",
+    "held_by_trial_gate",
+    "late_window_warning",
+    "wrist_neutral_gate_required",
+    "held_by_wrist_neutral_gate",
+    "wrist_neutral_gate_passed",
+    "wrist_neutral_wait_ms",
+    "wrist_lr_class_at_emit",
+    "wrist_up_down_class_at_emit",
     "timing_note",
     "end_reason",
     "haptic_episode_completed",
@@ -186,6 +200,20 @@ class HapticEventRecord:
     sync_warning: str = ""
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
+    time_ready_ms: float | None = None
+    actual_emit_ms: float | None = None
+    planned_emit_trial_number: int | None = None
+    emit_trial_number: int | None = None
+    trial_gate_window: list[int] = field(default_factory=list)
+    trial_gate_open_trial: int | None = None
+    held_by_trial_gate: bool = False
+    late_window_warning: str = ""
+    wrist_neutral_gate_required: bool = False
+    held_by_wrist_neutral_gate: bool = False
+    wrist_neutral_gate_passed: bool | None = None
+    wrist_neutral_wait_ms: float | None = None
+    wrist_lr_class_at_emit: str = ""
+    wrist_up_down_class_at_emit: str = ""
     timing_note: str = ""
     end_reason: str = ""
     haptic_episode_completed: bool = False
@@ -196,6 +224,7 @@ class HapticEventRecord:
     def to_csv_row(self) -> dict[str, Any]:
         row = asdict(self)
         row["channel_list"] = json.dumps(list(self.channel_list), separators=(",", ":"))
+        row["trial_gate_window"] = json.dumps(list(self.trial_gate_window), separators=(",", ":"))
         row["tcp_queued"] = self.queued_monotonic_ms is not None or bool(self.tcp_queued)
         row["tcp_success"] = self.success
         row["tcp_error"] = self.error
@@ -291,6 +320,28 @@ class SimpleHapticSender:
             sync_warning=getattr(scheduled, "sync_warning", ""),
             sampled_delay_ms=getattr(scheduled, "sampled_delay_ms", None),
             sampled_gap_ms=getattr(scheduled, "sampled_gap_ms", None),
+            time_ready_ms=getattr(scheduled, "time_ready_ms", None),
+            actual_emit_ms=getattr(scheduled, "actual_emit_ms", None),
+            planned_emit_trial_number=getattr(scheduled, "planned_emit_trial_number", None),
+            emit_trial_number=getattr(scheduled, "emit_trial_number", None),
+            trial_gate_window=getattr(scheduled, "trial_gate_window", None),
+            trial_gate_open_trial=getattr(scheduled, "trial_gate_open_trial", None),
+            held_by_trial_gate=getattr(scheduled, "held_by_trial_gate", False),
+            late_window_warning=getattr(scheduled, "late_window_warning", ""),
+            wrist_neutral_gate_required=getattr(
+                scheduled,
+                "wrist_neutral_gate_required",
+                False,
+            ),
+            held_by_wrist_neutral_gate=getattr(
+                scheduled,
+                "held_by_wrist_neutral_gate",
+                False,
+            ),
+            wrist_neutral_gate_passed=getattr(scheduled, "wrist_neutral_gate_passed", None),
+            wrist_neutral_wait_ms=getattr(scheduled, "wrist_neutral_wait_ms", None),
+            wrist_lr_class_at_emit=getattr(scheduled, "wrist_lr_class_at_emit", ""),
+            wrist_up_down_class_at_emit=getattr(scheduled, "wrist_up_down_class_at_emit", ""),
             timing_note=getattr(scheduled, "timing_note", ""),
             end_reason=getattr(scheduled, "end_reason", ""),
             haptic_episode_completed=getattr(scheduled, "haptic_episode_completed", False),
@@ -443,6 +494,20 @@ class SimpleHapticSender:
         sync_warning: str = "",
         sampled_delay_ms: int | None = None,
         sampled_gap_ms: int | None = None,
+        time_ready_ms: float | None = None,
+        actual_emit_ms: float | None = None,
+        planned_emit_trial_number: int | None = None,
+        emit_trial_number: int | None = None,
+        trial_gate_window: list[int] | tuple[int, ...] | None = None,
+        trial_gate_open_trial: int | None = None,
+        held_by_trial_gate: bool = False,
+        late_window_warning: str = "",
+        wrist_neutral_gate_required: bool = False,
+        held_by_wrist_neutral_gate: bool = False,
+        wrist_neutral_gate_passed: bool | None = None,
+        wrist_neutral_wait_ms: float | None = None,
+        wrist_lr_class_at_emit: str = "",
+        wrist_up_down_class_at_emit: str = "",
         timing_note: str = "",
         end_reason: str = "",
         haptic_episode_completed: bool = False,
@@ -533,6 +598,34 @@ class SimpleHapticSender:
             sync_warning=sync_warning,
             sampled_delay_ms=int(sampled_delay_ms) if sampled_delay_ms is not None else None,
             sampled_gap_ms=int(sampled_gap_ms) if sampled_gap_ms is not None else None,
+            time_ready_ms=float(time_ready_ms) if time_ready_ms is not None else None,
+            actual_emit_ms=float(actual_emit_ms) if actual_emit_ms is not None else None,
+            planned_emit_trial_number=(
+                int(planned_emit_trial_number)
+                if planned_emit_trial_number is not None
+                else None
+            ),
+            emit_trial_number=int(emit_trial_number) if emit_trial_number is not None else None,
+            trial_gate_window=[
+                int(item) for item in (trial_gate_window or ())
+            ],
+            trial_gate_open_trial=(
+                int(trial_gate_open_trial)
+                if trial_gate_open_trial is not None
+                else None
+            ),
+            held_by_trial_gate=bool(held_by_trial_gate),
+            late_window_warning=str(late_window_warning or ""),
+            wrist_neutral_gate_required=bool(wrist_neutral_gate_required),
+            held_by_wrist_neutral_gate=bool(held_by_wrist_neutral_gate),
+            wrist_neutral_gate_passed=wrist_neutral_gate_passed,
+            wrist_neutral_wait_ms=(
+                float(wrist_neutral_wait_ms)
+                if wrist_neutral_wait_ms is not None
+                else None
+            ),
+            wrist_lr_class_at_emit=str(wrist_lr_class_at_emit or ""),
+            wrist_up_down_class_at_emit=str(wrist_up_down_class_at_emit or ""),
             timing_note=timing_note,
             end_reason=end_reason,
             haptic_episode_completed=bool(haptic_episode_completed),

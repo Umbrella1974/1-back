@@ -55,14 +55,14 @@ calibration:
   min_distance_range_ratio: 0.15
 
 haptic:
-  vibration_enabled: true
+  vibration_enabled: false
   matrix_enabled: true
   visual_text_cue_enabled: false
   max_queue_size: 128
   matrix_latest_only: true
 
 vibration_tcp:
-  enabled: true
+  enabled: false
   required: false
   host: 192.168.1.22
   port: 12346

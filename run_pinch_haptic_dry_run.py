@@ -214,6 +214,8 @@ def run_live_pinch_haptic_dry_run(config_path: str | Path) -> Path:
                 "condition_id": session_config.get("condition_id", ""),
                 "config_path": str(config_path),
                 "haptic_plan_config_path": str(plan_path),
+                "haptic_plan_id": plan.plan_id,
+                "haptic_plan_random_seed": plan.random_seed,
                 "start_wall_time_iso": start_wall,
                 "end_wall_time_iso": end_wall,
                 "duration_s": session_config.get("duration_s", 60),

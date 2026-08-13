@@ -56,7 +56,7 @@ calibration:
 
 haptic:
   vibration_enabled: true
-  matrix_enabled: true
+  matrix_enabled: false
   visual_text_cue_enabled: false
   max_queue_size: 128
   matrix_latest_only: true
@@ -70,7 +70,7 @@ vibration_tcp:
   send_timeout_s: 0.2
 
 matrix_tcp:
-  enabled: true
+  enabled: false
   required: false
   host: 192.168.1.9
   port: 12345

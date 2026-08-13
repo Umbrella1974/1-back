@@ -41,6 +41,9 @@ class HapticPlanEvent:
     payload: dict[str, Any] | None = None
     onset_delay_ms: tuple[int, int] | None = None
     onset_gap_after_previous_ms: tuple[int, int] | None = None
+    nback_trial_window: tuple[int, int] | None = None
+    require_wrist_neutral_before_emit: bool = False
+    wrist_neutral_timeout_ms: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -63,6 +66,14 @@ class HapticPlanEvent:
             )
         else:
             payload.pop("onset_gap_after_previous_ms", None)
+        if self.nback_trial_window is not None:
+            payload["nback_trial_window"] = list(self.nback_trial_window)
+        else:
+            payload.pop("nback_trial_window", None)
+        if not self.require_wrist_neutral_before_emit:
+            payload.pop("require_wrist_neutral_before_emit", None)
+        if self.wrist_neutral_timeout_ms is None:
+            payload.pop("wrist_neutral_timeout_ms", None)
         return payload
 
 
@@ -222,6 +233,9 @@ def _parse_event(
         "payload",
         "onset_delay_ms",
         "onset_gap_after_previous_ms",
+        "nback_trial_window",
+        "require_wrist_neutral_before_emit",
+        "wrist_neutral_timeout_ms",
     }
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -281,9 +295,37 @@ def _parse_event(
         if payload.get("onset_gap_after_previous_ms") is not None
         else None
     )
+    nback_trial_window = (
+        _positive_int_range(
+            payload.get("nback_trial_window"),
+            f"{name_prefix}.nback_trial_window",
+        )
+        if payload.get("nback_trial_window") is not None
+        else None
+    )
+    require_wrist_neutral_before_emit = _bool_value(
+        payload.get("require_wrist_neutral_before_emit", False),
+        f"{name_prefix}.require_wrist_neutral_before_emit",
+    )
+    wrist_neutral_timeout_ms = (
+        _non_negative_int(
+            payload.get("wrist_neutral_timeout_ms"),
+            f"{name_prefix}.wrist_neutral_timeout_ms",
+        )
+        if payload.get("wrist_neutral_timeout_ms") is not None
+        else None
+    )
 
     if duration_ms is not None and duration_ms_range is not None:
         raise ValueError(f"{name_prefix} cannot use both duration_ms and duration_ms_range.")
+    if (
+        wrist_neutral_timeout_ms is not None
+        and not require_wrist_neutral_before_emit
+    ):
+        raise ValueError(
+            f"{name_prefix}.wrist_neutral_timeout_ms requires "
+            "require_wrist_neutral_before_emit."
+        )
     if modality == "vibration" and command_label is None and command_id is None:
         raise ValueError(f"{name_prefix} vibration event requires command_label or command_id.")
     if modality == "matrix" and not channel_list and event_payload is None:
@@ -310,6 +352,9 @@ def _parse_event(
         payload=event_payload,
         onset_delay_ms=onset_delay_ms,
         onset_gap_after_previous_ms=onset_gap_after_previous_ms,
+        nback_trial_window=nback_trial_window,
+        require_wrist_neutral_before_emit=require_wrist_neutral_before_emit,
+        wrist_neutral_timeout_ms=wrist_neutral_timeout_ms,
     )
 
 
@@ -534,6 +579,16 @@ def _range_ms(value: Any, name: str) -> tuple[int, int]:
     return lower, upper
 
 
+def _positive_int_range(value: Any, name: str) -> tuple[int, int]:
+    if not isinstance(value, list | tuple) or len(value) != 2:
+        raise ValueError(f"{name} must be a two-item [min, max] list.")
+    lower = _positive_int(value[0], f"{name}[0]")
+    upper = _positive_int(value[1], f"{name}[1]")
+    if lower > upper:
+        raise ValueError(f"{name}[0] must be <= {name}[1].")
+    return lower, upper
+
+
 def _int_value(value: Any, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer.")
@@ -542,6 +597,12 @@ def _int_value(value: Any, name: str) -> int:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be an integer.") from exc
     return result
+
+
+def _bool_value(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be true or false.")
+    return value
 
 
 def _positive_int(value: Any, name: str) -> int:

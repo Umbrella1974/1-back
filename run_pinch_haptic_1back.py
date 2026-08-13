@@ -171,7 +171,16 @@ class ZoneRunStats:
 
 @dataclass
 class ReleaseGateState:
-    pending_release_event: Any | None = None
+    pending_event: Any | None = None
+    pending_event_ready_ms: float | None = None
+    pending_held_by_trial_gate: bool = False
+    pending_held_by_wrist_neutral_gate: bool = False
+    pending_planned_emit_trial_number: int | None = None
+    pending_trial_gate_window: tuple[int, int] | None = None
+    pending_trial_gate_open_trial: int | None = None
+    pending_late_window_warning: str = ""
+    pending_wrist_neutral_gate_required: bool = False
+    pending_wrist_neutral_gate_passed: bool | None = None
     release_was_held: bool = False
     release_emit_trial_number: int | None = None
     prerelease_deadline_warning_written: bool = False
@@ -271,6 +280,7 @@ def run_pinch_haptic_1back_core(
     feedback_config = haptic_feedback_display or HapticFeedbackDisplayConfig()
     episode_state = HapticEpisodeState()
     latest_sample: PinchInputSample | None = None
+    latest_wrist_sample: Any | None = None
     latest_zone = "invalid"
     sample_index = 0
     response_index = 0
@@ -317,28 +327,23 @@ def run_pinch_haptic_1back_core(
 
         emitted: list[Any] = []
         if post_release_started_ms is None:
-            emitted = _advance_scheduler_for_current_state(
-                scheduler,
-                zone=latest_zone,
-                now_ms=now_ms,
-                latest_sample=latest_sample,
-                digit_onsets_ms=nback_timeline.digit_onsets_ms,
-            )
-            emitted = _gate_haptic_events_for_nback(
+            if release_gate_state.pending_event is None:
+                emitted = _advance_scheduler_for_current_state(
+                    scheduler,
+                    zone=latest_zone,
+                    now_ms=now_ms,
+                    latest_sample=latest_sample,
+                    digit_onsets_ms=nback_timeline.digit_onsets_ms,
+                )
+            emitted = _gate_haptic_events(
                 emitted,
                 policy=policy,
                 gate_state=release_gate_state,
+                scheduler=scheduler,
                 nback_timeline=nback_timeline,
                 now_ms=now_ms,
-            )
-            emitted.extend(
-                _release_pending_if_ready(
-                    policy=policy,
-                    gate_state=release_gate_state,
-                    nback_timeline=nback_timeline,
-                    now_ms=now_ms,
-                    latest_zone=latest_zone,
-                )
+                latest_zone=latest_zone,
+                latest_wrist_sample=None,
             )
             _append_prerelease_deadline_warning_if_needed(
                 policy=policy,
@@ -389,7 +394,7 @@ def run_pinch_haptic_1back_core(
         if (
             (
                 _haptic_sequence_active(scheduler, episode_state)
-                or release_gate_state.pending_release_event is not None
+                or release_gate_state.pending_event is not None
             )
             and policy.finish_active_haptic_before_exit
         ):
@@ -418,7 +423,7 @@ def run_pinch_haptic_1back_core(
 
     if (
         _haptic_sequence_active(scheduler, episode_state)
-        or release_gate_state.pending_release_event is not None
+        or release_gate_state.pending_event is not None
     ) and not policy.finish_active_haptic_before_exit:
         episode_state.interrupted_haptic_trial = True
     final_nback_ms = (
@@ -673,6 +678,8 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "condition_id": session_config.get("condition_id", ""),
                 "config_path": str(config_path),
                 "haptic_plan_config_path": str(plan_path),
+                "haptic_plan_id": plan.plan_id,
+                "haptic_plan_random_seed": plan.random_seed,
                 "start_wall_time_iso": start_wall,
                 "end_wall_time_iso": end_wall,
                 "output_files": logger.paths.to_dict(),
@@ -930,43 +937,37 @@ def _run_live_formal_phase(
                 and wrist_config.save_timeseries
                 and wrist_rotation_calibration is not None
             ):
-                logger.write_wrist_rotation_sample(
-                    classify_wrist_rotation_frame(
-                        frame,
-                        wrist_rotation_calibration,
-                        quaternion_order=wrist_config.quaternion_order,
-                        session_id=session_id,
-                    )
+                latest_wrist_sample = classify_wrist_rotation_frame(
+                    frame,
+                    wrist_rotation_calibration,
+                    quaternion_order=wrist_config.quaternion_order,
+                    session_id=session_id,
                 )
+                logger.write_wrist_rotation_sample(latest_wrist_sample)
             if post_release_started_ms is not None:
                 post_release_pinch_samples += 1
             frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
 
         emitted: list[Any] = []
         if post_release_started_ms is None:
-            emitted = _advance_scheduler_for_current_state(
-                scheduler,
-                zone=latest_zone,
-                now_ms=now_ms,
-                latest_sample=latest_sample,
-                digit_onsets_ms=nback_timeline.digit_onsets_ms,
-                haptic_debug_config=debug_config,
-            )
-            emitted = _gate_haptic_events_for_nback(
+            if release_gate_state.pending_event is None:
+                emitted = _advance_scheduler_for_current_state(
+                    scheduler,
+                    zone=latest_zone,
+                    now_ms=now_ms,
+                    latest_sample=latest_sample,
+                    digit_onsets_ms=nback_timeline.digit_onsets_ms,
+                    haptic_debug_config=debug_config,
+                )
+            emitted = _gate_haptic_events(
                 emitted,
                 policy=policy,
                 gate_state=release_gate_state,
+                scheduler=scheduler,
                 nback_timeline=nback_timeline,
                 now_ms=now_ms,
-            )
-            emitted.extend(
-                _release_pending_if_ready(
-                    policy=policy,
-                    gate_state=release_gate_state,
-                    nback_timeline=nback_timeline,
-                    now_ms=now_ms,
-                    latest_zone=latest_zone,
-                )
+                latest_zone=latest_zone,
+                latest_wrist_sample=latest_wrist_sample,
             )
             _append_prerelease_deadline_warning_if_needed(
                 policy=policy,
@@ -1017,7 +1018,7 @@ def _run_live_formal_phase(
             if (
                 (
                     _haptic_sequence_active(scheduler, episode_state)
-                    or release_gate_state.pending_release_event is not None
+                    or release_gate_state.pending_event is not None
                 )
                 and policy.finish_active_haptic_before_exit
             ):
@@ -1026,7 +1027,7 @@ def _run_live_formal_phase(
             end_reason = "nback_complete" if nback_complete else "duration_elapsed"
             if (
                 _haptic_sequence_active(scheduler, episode_state)
-                or release_gate_state.pending_release_event is not None
+                or release_gate_state.pending_event is not None
             ) and not policy.finish_active_haptic_before_exit:
                 episode_state.interrupted_haptic_trial = True
             final_now_ms = now_ms
@@ -1443,93 +1444,337 @@ def _nback_trial_number_at(
     return trial_number
 
 
-def _gate_haptic_events_for_nback(
+def _gate_haptic_events(
     events: list[Any],
     *,
     policy: SessionEndPolicy,
     gate_state: ReleaseGateState,
+    scheduler: HapticTrialScheduler,
     nback_timeline: NBackTimeline,
     now_ms: float,
+    latest_zone: str,
+    latest_wrist_sample: Any | None,
 ) -> list[Any]:
-    if not events:
-        return []
-    if (
-        not policy.hold_release_until_nback_trial
-        or policy.release_nback_trial_window is None
-    ):
-        return events
-
-    lower, upper = policy.release_nback_trial_window
-    trial_number = _nback_trial_number_at(nback_timeline, now_ms)
     ready: list[Any] = []
+    if gate_state.pending_event is not None:
+        released = _release_pending_gate_event_if_ready(
+            policy=policy,
+            gate_state=gate_state,
+            scheduler=scheduler,
+            nback_timeline=nback_timeline,
+            now_ms=now_ms,
+            latest_zone=latest_zone,
+            latest_wrist_sample=latest_wrist_sample,
+        )
+        if released is None:
+            return ready
+        ready.append(released)
     for event in events:
-        if str(getattr(event, "event_name", "")) != "release":
-            ready.append(event)
-            continue
-        if trial_number < lower:
-            gate_state.pending_release_event = event
-            gate_state.release_was_held = True
-            continue
-        if trial_number > upper:
-            _append_once(
-                gate_state.warnings,
-                f"release_after_nback_trial_window_{lower}_{upper}:trial_{trial_number}",
-            )
-        gate_state.release_emit_trial_number = trial_number
-        ready.append(event)
+        released = _gate_single_haptic_event(
+            event,
+            policy=policy,
+            gate_state=gate_state,
+            scheduler=scheduler,
+            nback_timeline=nback_timeline,
+            now_ms=now_ms,
+            latest_zone=latest_zone,
+            latest_wrist_sample=latest_wrist_sample,
+        )
+        if released is None:
+            break
+        ready.append(released)
     return ready
 
 
-def _release_pending_if_ready(
+def _gate_single_haptic_event(
+    event: Any,
     *,
     policy: SessionEndPolicy,
     gate_state: ReleaseGateState,
+    scheduler: HapticTrialScheduler,
     nback_timeline: NBackTimeline,
     now_ms: float,
     latest_zone: str,
-) -> list[Any]:
-    event = gate_state.pending_release_event
-    if event is None or policy.release_nback_trial_window is None:
-        return []
-    lower, upper = policy.release_nback_trial_window
-    trial_number = _nback_trial_number_at(nback_timeline, now_ms)
-    if trial_number < lower:
-        return []
-    if trial_number > upper:
-        _append_once(
-            gate_state.warnings,
-            f"release_after_nback_trial_window_{lower}_{upper}:trial_{trial_number}",
-        )
-    gate_state.pending_release_event = None
-    gate_state.release_emit_trial_number = trial_number
-    return [
-        _retime_held_release_event(
+    latest_wrist_sample: Any | None,
+) -> Any | None:
+    time_ready_ms = float(now_ms)
+    planned_trial = _nback_trial_number_at(nback_timeline, time_ready_ms)
+    trial_window = _event_trial_window(event, policy)
+    if trial_window is not None:
+        lower, upper = trial_window
+        if planned_trial < lower:
+            _store_pending_gate_event(
+                event,
+                gate_state=gate_state,
+                time_ready_ms=time_ready_ms,
+                planned_trial=planned_trial,
+                trial_window=trial_window,
+                held_by_trial_gate=True,
+                held_by_wrist_neutral_gate=False,
+            )
+            if str(getattr(event, "event_name", "")) == "release":
+                gate_state.release_was_held = True
+            return None
+    if _event_requires_wrist_neutral(event) and not _wrist_neutral_gate_passed(latest_wrist_sample):
+        _store_pending_gate_event(
             event,
-            now_ms=now_ms,
-            latest_zone=latest_zone,
+            gate_state=gate_state,
+            time_ready_ms=time_ready_ms,
+            planned_trial=planned_trial,
+            trial_window=trial_window,
+            held_by_trial_gate=False,
+            held_by_wrist_neutral_gate=True,
+            wrist_neutral_gate_passed=False,
         )
-    ]
+        return None
+    return _event_ready_for_emit(
+        event,
+        policy=policy,
+        gate_state=gate_state,
+        scheduler=scheduler,
+        nback_timeline=nback_timeline,
+        now_ms=now_ms,
+        latest_zone=latest_zone,
+        latest_wrist_sample=latest_wrist_sample,
+        time_ready_ms=time_ready_ms,
+        planned_trial=planned_trial,
+        trial_window=trial_window,
+        held_by_trial_gate=False,
+        held_by_wrist_neutral_gate=False,
+        wrist_neutral_gate_passed=(
+            True if _event_requires_wrist_neutral(event) else None
+        ),
+    )
 
 
-def _retime_held_release_event(
-    event: Any,
+def _release_pending_gate_event_if_ready(
     *,
+    policy: SessionEndPolicy,
+    gate_state: ReleaseGateState,
+    scheduler: HapticTrialScheduler,
+    nback_timeline: NBackTimeline,
     now_ms: float,
     latest_zone: str,
+    latest_wrist_sample: Any | None,
+) -> Any | None:
+    event = gate_state.pending_event
+    if event is None:
+        return None
+    trial_number = _nback_trial_number_at(nback_timeline, now_ms)
+    if gate_state.pending_trial_gate_window is not None:
+        lower, _ = gate_state.pending_trial_gate_window
+        if trial_number < lower:
+            return None
+    wrist_required = bool(gate_state.pending_wrist_neutral_gate_required)
+    wrist_passed = _wrist_neutral_gate_passed(latest_wrist_sample)
+    if wrist_required and not wrist_passed:
+        timeout_ms = _event_wrist_neutral_timeout_ms(event)
+        waited_ms = float(now_ms) - float(gate_state.pending_event_ready_ms or now_ms)
+        if waited_ms < timeout_ms:
+            gate_state.pending_held_by_wrist_neutral_gate = True
+            gate_state.pending_wrist_neutral_gate_passed = False
+            return None
+    result = _event_ready_for_emit(
+        event,
+        policy=policy,
+        gate_state=gate_state,
+        scheduler=scheduler,
+        nback_timeline=nback_timeline,
+        now_ms=now_ms,
+        latest_zone=latest_zone,
+        latest_wrist_sample=latest_wrist_sample,
+        time_ready_ms=float(gate_state.pending_event_ready_ms or now_ms),
+        planned_trial=gate_state.pending_planned_emit_trial_number,
+        trial_window=gate_state.pending_trial_gate_window,
+        held_by_trial_gate=gate_state.pending_held_by_trial_gate,
+        held_by_wrist_neutral_gate=gate_state.pending_held_by_wrist_neutral_gate,
+        wrist_neutral_gate_passed=(
+            wrist_passed if wrist_required else gate_state.pending_wrist_neutral_gate_passed
+        ),
+    )
+    gate_state.pending_event = None
+    gate_state.pending_event_ready_ms = None
+    gate_state.pending_held_by_trial_gate = False
+    gate_state.pending_held_by_wrist_neutral_gate = False
+    gate_state.pending_planned_emit_trial_number = None
+    gate_state.pending_trial_gate_window = None
+    gate_state.pending_trial_gate_open_trial = None
+    gate_state.pending_late_window_warning = ""
+    gate_state.pending_wrist_neutral_gate_required = False
+    gate_state.pending_wrist_neutral_gate_passed = None
+    return result
+
+
+def _store_pending_gate_event(
+    event: Any,
+    *,
+    gate_state: ReleaseGateState,
+    time_ready_ms: float,
+    planned_trial: int,
+    trial_window: tuple[int, int] | None,
+    held_by_trial_gate: bool,
+    held_by_wrist_neutral_gate: bool,
+    wrist_neutral_gate_passed: bool | None = None,
+) -> None:
+    gate_state.pending_event = event
+    gate_state.pending_event_ready_ms = float(time_ready_ms)
+    gate_state.pending_planned_emit_trial_number = int(planned_trial)
+    gate_state.pending_trial_gate_window = trial_window
+    gate_state.pending_trial_gate_open_trial = trial_window[0] if trial_window is not None else None
+    gate_state.pending_held_by_trial_gate = bool(held_by_trial_gate)
+    gate_state.pending_held_by_wrist_neutral_gate = bool(held_by_wrist_neutral_gate)
+    gate_state.pending_wrist_neutral_gate_required = _event_requires_wrist_neutral(event)
+    gate_state.pending_wrist_neutral_gate_passed = wrist_neutral_gate_passed
+
+
+def _event_ready_for_emit(
+    event: Any,
+    *,
+    policy: SessionEndPolicy,
+    gate_state: ReleaseGateState,
+    scheduler: HapticTrialScheduler,
+    nback_timeline: NBackTimeline,
+    now_ms: float,
+    latest_zone: str,
+    latest_wrist_sample: Any | None,
+    time_ready_ms: float,
+    planned_trial: int | None,
+    trial_window: tuple[int, int] | None,
+    held_by_trial_gate: bool,
+    held_by_wrist_neutral_gate: bool,
+    wrist_neutral_gate_passed: bool | None,
 ) -> Any:
+    emit_trial = _nback_trial_number_at(nback_timeline, now_ms)
+    late_warning = ""
+    if trial_window is not None and emit_trial > trial_window[1]:
+        late_warning = (
+            f"{getattr(event, 'event_name', 'event')}_after_nback_trial_window_"
+            f"{trial_window[0]}_{trial_window[1]}:trial_{emit_trial}"
+        )
+        _append_once(gate_state.warnings, late_warning)
+    if str(getattr(event, "event_name", "")) == "release":
+        gate_state.release_emit_trial_number = emit_trial
     duration_ms = float(getattr(event, "duration_ms", 0) or 0)
     timing_note = str(getattr(event, "timing_note", "") or "")
-    if timing_note:
-        timing_note = timing_note + ";release_held_until_nback_trial"
-    else:
-        timing_note = "release_held_until_nback_trial"
+    notes: list[str] = []
+    if held_by_trial_gate:
+        notes.append("held_by_trial_gate")
+    if held_by_wrist_neutral_gate:
+        notes.append("held_by_wrist_neutral_gate")
+    if notes:
+        timing_note = ";".join([item for item in (timing_note, *notes) if item])
+    _retime_scheduler_pending_after_gate_hold(
+        scheduler,
+        held_event=event,
+        held_by_gate=held_by_trial_gate or held_by_wrist_neutral_gate,
+        time_ready_ms=time_ready_ms,
+        actual_emit_ms=now_ms,
+    )
     return replace(
         event,
         actual_emit_monotonic_ms=float(now_ms),
+        actual_emit_ms=float(now_ms),
         event_end_monotonic_ms=float(now_ms) + duration_ms,
         actual_zone_at_emit=str(latest_zone),
+        time_ready_ms=float(time_ready_ms),
+        planned_emit_trial_number=planned_trial,
+        emit_trial_number=emit_trial,
+        trial_gate_window=trial_window,
+        trial_gate_open_trial=trial_window[0] if trial_window is not None else None,
+        held_by_trial_gate=held_by_trial_gate,
+        late_window_warning=late_warning,
+        wrist_neutral_gate_required=_event_requires_wrist_neutral(event),
+        held_by_wrist_neutral_gate=held_by_wrist_neutral_gate,
+        wrist_neutral_gate_passed=wrist_neutral_gate_passed,
+        wrist_neutral_wait_ms=(
+            float(now_ms) - float(time_ready_ms)
+            if held_by_wrist_neutral_gate
+            else 0.0
+            if _event_requires_wrist_neutral(event)
+            else None
+        ),
+        wrist_lr_class_at_emit=_wrist_lr_class(latest_wrist_sample),
+        wrist_up_down_class_at_emit=_wrist_up_down_class(latest_wrist_sample),
         timing_note=timing_note,
     )
+
+
+def _retime_scheduler_pending_after_gate_hold(
+    scheduler: HapticTrialScheduler,
+    *,
+    held_event: Any,
+    held_by_gate: bool,
+    time_ready_ms: float,
+    actual_emit_ms: float,
+) -> None:
+    if not held_by_gate:
+        return
+    delay_ms = float(actual_emit_ms) - float(time_ready_ms)
+    if delay_ms <= 1e-9:
+        return
+    pending = getattr(scheduler, "_pending", None)
+    if pending is None:
+        return
+    if int(getattr(pending, "event_index", -1)) <= int(getattr(held_event, "event_index", -1)):
+        return
+    adjustment = getattr(pending, "adjustment", None)
+    if adjustment is None:
+        return
+    scheduler._pending = replace(
+        pending,
+        adjustment=replace(
+            adjustment,
+            original_planned_onset_ms=float(adjustment.original_planned_onset_ms)
+            + delay_ms,
+            adjusted_onset_ms=float(adjustment.adjusted_onset_ms) + delay_ms,
+        ),
+    )
+
+
+def _event_trial_window(
+    event: Any,
+    policy: SessionEndPolicy,
+) -> tuple[int, int] | None:
+    if (
+        str(getattr(event, "event_name", "")) == "release"
+        and policy.hold_release_until_nback_trial
+        and policy.release_nback_trial_window is not None
+    ):
+        return policy.release_nback_trial_window
+    value = getattr(event, "nback_trial_window", None)
+    if value is None:
+        return None
+    return (int(value[0]), int(value[1]))
+
+
+def _event_requires_wrist_neutral(event: Any) -> bool:
+    return bool(getattr(event, "require_wrist_neutral_before_emit", False))
+
+
+def _event_wrist_neutral_timeout_ms(event: Any) -> float:
+    value = getattr(event, "wrist_neutral_timeout_ms", None)
+    return float(value if value is not None else 3000.0)
+
+
+def _wrist_neutral_gate_passed(sample: Any | None) -> bool:
+    if sample is None:
+        return False
+    return (
+        str(getattr(sample, "wrist_rotation_class", "unknown")) == "neutral"
+        and str(getattr(sample, "wrist_up_down_class", "unknown")) == "neutral"
+    )
+
+
+def _wrist_lr_class(sample: Any | None) -> str:
+    if sample is None:
+        return ""
+    return str(getattr(sample, "wrist_rotation_class", ""))
+
+
+def _wrist_up_down_class(sample: Any | None) -> str:
+    if sample is None:
+        return ""
+    return str(getattr(sample, "wrist_up_down_class", ""))
 
 
 def _append_prerelease_deadline_warning_if_needed(
@@ -1546,7 +1791,7 @@ def _append_prerelease_deadline_warning_if_needed(
         deadline is None
         or gate_state.prerelease_deadline_warning_written
         or post_release_started_ms is not None
-        or gate_state.pending_release_event is not None
+        or gate_state.pending_event is not None
     ):
         return
     if _nback_trial_number_at(nback_timeline, now_ms) < deadline:

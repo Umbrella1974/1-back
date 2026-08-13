@@ -142,6 +142,36 @@ haptic_plan_config: haptic_plan_config_example.yaml
 
 因此正式日志里应能看到 `slip` 和 `slip_end` 两行，避免 slip vibration 一直 latch 到实验结束。
 
+每个 haptic event 还可以选择加 1-back 试次窗口和软回正检查：
+
+```yaml
+- name: left
+  modality: matrix
+  channel_list: [1, 2, 3]
+  duration_ms: 1000
+  trigger_zone: closed_zone
+  onset_gap_after_previous_ms: [6000, 10000]
+  nback_trial_window: [20, 25]
+  require_wrist_neutral_before_emit: true
+  wrist_neutral_timeout_ms: 3000
+```
+
+含义：
+
+- `onset_delay_ms` / `onset_gap_after_previous_ms` 仍然决定这个 event 本来应该什么时候出现。
+- `nback_trial_window: [20, 25]` 只做试次 gate：如果本来过早，会等到第 20 试次再发；如果已经晚于第 25 试次，不会取消，会立刻发并记录 `late_window_warning`。
+- `require_wrist_neutral_before_emit: true` 表示发出前要求手腕左右和上下分类都回到 `neutral`。
+- `wrist_neutral_timeout_ms` 是软回正等待时间。timeout 后仍然发，但 `haptic_events.csv` 会标记这次不是干净回正发出。
+
+release 仍优先使用 `dualtask_config.yaml` 里的全局：
+
+```yaml
+release_nback_trial_window: [40, 50]
+hold_release_until_nback_trial: true
+```
+
+普通 event 使用自己写在 haptic plan 里的 `nback_trial_window`。
+
 ### Wrist Rotation
 
 ```yaml
@@ -177,8 +207,26 @@ wrist_rotation:
 
 - `haptic_events.csv` 是否有 `slip_end command_id=4`
 - `summary.json` 的 `end_reason`
+- `summary.json` 的 `haptic_plan_id` 和 `haptic_plan_random_seed`
 - `summary.json` 的 wrist rotation 字段
 - `nback_events.csv` 是否符合 post-release 期间的预期行为
+
+`haptic_events.csv` 新增了用于事后排查调度的字段：
+
+- `time_ready_ms`：时间 scheduler 本来准备发出 event 的时刻。
+- `actual_emit_ms` / `monotonic_ms`：gate 后真正发出的时刻。
+- `planned_emit_trial_number`：`time_ready_ms` 所在的 1-back 试次。
+- `emit_trial_number`：真正发出时所在的 1-back 试次。
+- `trial_gate_window` / `trial_gate_open_trial`：本 event 使用的试次 gate。
+- `held_by_trial_gate`：是否因为试次窗口过早而等待。
+- `late_window_warning`：是否晚于窗口上界才发出。
+- `wrist_neutral_gate_required`：是否要求回正。
+- `held_by_wrist_neutral_gate`：是否曾经因为未回正而等待。
+- `wrist_neutral_gate_passed`：真正发出时是否干净回正。`False` 通常表示 timeout 后仍发。
+- `wrist_neutral_wait_ms`：等待回正的时间。
+- `wrist_lr_class_at_emit` / `wrist_up_down_class_at_emit`：发出瞬间的手腕分类。
+
+这些字段和 n-back、pinch、wrist 数据使用同一个 `monotonic_ms` 时间系统，可以直接做时间差。
 
 ## 测试
 
@@ -206,3 +254,9 @@ python -m pytest
 - haptic scheduler 的事件顺序
 - matrix 发送逻辑
 - pinch calibration 语义
+
+## 后续需要整理的地方
+
+- 你后续写好 3 套 haptic plan 后，需要统一检查每套 plan 的 `plan_id`、`random_seed`、事件顺序、modality、TCP 开关是否和实验条件匹配。
+- 建议保留一套快速 debug plan，把所有 gap 缩短，用来先验证 TCP、日志字段、trial window 和软回正 gate。
+- 如果要把所有 haptic 条件做成正式实验批量入口，可以再新增一个小的条件选择层；当前最小做法仍是每次在 `dualtask_config.yaml` 里切换 `haptic_plan_config`。
