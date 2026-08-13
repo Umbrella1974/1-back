@@ -641,13 +641,22 @@ class SimpleHapticSender:
 
     def _start_tcp_workers(self) -> None:
         if self.config.disabled_mode:
+            print("[HAPTIC TCP] disabled_mode=true; no TCP workers started.")
             return
         if self.config.vibration_enabled and self.config.vibration_tcp_enabled:
             self._vibration_worker = self._start_vibration_worker()
+        elif self.config.vibration_enabled:
+            print("[HAPTIC TCP] vibration enabled; vibration TCP disabled.")
         if self.config.matrix_enabled and self.config.matrix_tcp_enabled:
             self._matrix_worker = self._start_matrix_worker()
+        elif self.config.matrix_enabled:
+            print("[HAPTIC TCP] matrix enabled; matrix TCP disabled.")
 
     def _start_vibration_worker(self) -> VibrationTcpLineWorker | None:
+        print(
+            "[HAPTIC TCP] connecting vibration "
+            f"{self.config.vibration_host}:{self.config.vibration_port}..."
+        )
         worker = VibrationTcpLineWorker(
             host=self.config.vibration_host,
             port=self.config.vibration_port,
@@ -658,6 +667,10 @@ class SimpleHapticSender:
         )
         try:
             worker.start()
+            print(
+                "[HAPTIC TCP] vibration connected "
+                f"{self.config.vibration_host}:{self.config.vibration_port}"
+            )
             return worker
         except VibrationHapticConnectionError as exc:
             if self.config.vibration_required:
@@ -667,6 +680,10 @@ class SimpleHapticSender:
             return None
 
     def _start_matrix_worker(self) -> MatrixTcpWorker | None:
+        print(
+            "[HAPTIC TCP] connecting matrix "
+            f"{self.config.matrix_host}:{self.config.matrix_port}..."
+        )
         worker = MatrixTcpWorker(
             host=self.config.matrix_host,
             port=self.config.matrix_port,
@@ -678,6 +695,10 @@ class SimpleHapticSender:
         )
         try:
             worker.start()
+            print(
+                "[HAPTIC TCP] matrix connected "
+                f"{self.config.matrix_host}:{self.config.matrix_port}"
+            )
             return worker
         except MatrixHapticConnectionError as exc:
             if self.config.matrix_required:

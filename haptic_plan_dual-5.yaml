@@ -3,7 +3,7 @@ description: Contact first, then slip-left-right, release last.
 random_seed: 123
 
 timing:
-  contact_onset_delay_ms: [4000, 7000]
+  contact_onset_delay_ms: [1000, 2000]
   inter_event_gap_ms: [9000,13000]
   refractory_ms: 3000
 
@@ -14,9 +14,7 @@ events:
     command_id: 1
     duration_ms: 1500
     trigger_zone: open_zone
-    onset_delay_ms: [4000, 7000]
-    require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000
+    onset_delay_ms: [1000, 2000]
 
   - name: slip
     modality: vibration
