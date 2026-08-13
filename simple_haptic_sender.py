@@ -13,6 +13,7 @@ from typing import Any
 
 from vendor_exp2_abc.haptic_tcp_worker import (
     MatrixHapticConnectionError,
+    MatrixSendStep,
     MatrixTcpWorker,
 )
 from vendor_exp2_abc.matrix_haptic_protocol import encode_matrix_channel_packet
@@ -34,6 +35,9 @@ HAPTIC_EVENT_FIELDS = [
     "command_label",
     "command_id",
     "channel_list",
+    "matrix_sequence_step_index",
+    "matrix_sequence_step_count",
+    "matrix_sequence_offset_ms",
     "duration_ms",
     "sampled_duration_ms",
     "event_end_monotonic_ms",
@@ -168,6 +172,9 @@ class HapticEventRecord:
     command_label: str | None = None
     command_id: int | None = None
     channel_list: list[int] = field(default_factory=list)
+    matrix_sequence_step_index: int | None = None
+    matrix_sequence_step_count: int | None = None
+    matrix_sequence_offset_ms: int | None = None
     duration_ms: int | None = None
     sampled_duration_ms: int | None = None
     event_end_monotonic_ms: float | None = None
@@ -347,18 +354,25 @@ class SimpleHapticSender:
             haptic_episode_completed=getattr(scheduled, "haptic_episode_completed", False),
         )
         modality = str(getattr(scheduled, "modality", ""))
-        if event_name == "contact":
+        sequence = list(getattr(scheduled, "matrix_sequence", ()) or ())
+        if event_name == "contact" and modality == "vibration":
             record = self.send_contact(**kwargs)
             self._schedule_vibration_end_command(scheduled, record)
             return record
-        if event_name == "release":
+        if event_name == "release" and modality == "vibration":
             record = self.send_release(**kwargs)
             self._schedule_vibration_end_command(scheduled, record)
             return record
-        if event_name == "slip":
+        if event_name == "slip" and modality == "vibration":
             record = self.send_slip(**kwargs)
             self._schedule_vibration_end_command(scheduled, record)
             return record
+        if modality == "matrix" and sequence:
+            return self._record_matrix_sequence(
+                event_name,
+                sequence,
+                **kwargs,
+            )
         if event_name == "left" and modality == "matrix":
             return self.send_matrix_left(
                 list(getattr(scheduled, "channel_list", ()) or ()),
@@ -385,9 +399,23 @@ class SimpleHapticSender:
     def record_plan_event(self, event: Any, **kwargs: Any) -> HapticEventRecord:
         """Record a parsed HapticPlanEvent-like object."""
 
+        modality = str(getattr(event, "modality"))
+        sequence = list(getattr(event, "matrix_sequence", ()) or ())
+        if modality == "matrix" and sequence:
+            return self._record_matrix_sequence(
+                getattr(event, "name"),
+                sequence,
+                command_label=getattr(event, "command_label", None),
+                command_id=getattr(event, "command_id", None),
+                duration_ms=getattr(event, "duration_ms", None),
+                trigger_zone=getattr(event, "trigger_zone", None),
+                end_command_label=getattr(event, "end_command_label", None),
+                end_command_id=getattr(event, "end_command_id", None),
+                **kwargs,
+            )
         return self._record_event(
             getattr(event, "name"),
-            getattr(event, "modality"),
+            modality,
             command_label=getattr(event, "command_label", None),
             command_id=getattr(event, "command_id", None),
             channel_list=list(getattr(event, "channel_list", ()) or ()),
@@ -439,6 +467,72 @@ class SimpleHapticSender:
             records.append(record)
         return records
 
+    def _record_matrix_sequence(
+        self,
+        event_name: str,
+        sequence: list[Any] | tuple[Any, ...],
+        **kwargs: Any,
+    ) -> HapticEventRecord:
+        base_monotonic_ms = kwargs.get("monotonic_ms")
+        if base_monotonic_ms is None:
+            base_monotonic_ms = self.monotonic_ms_fn()
+        base_actual_emit_ms = kwargs.get("actual_emit_ms")
+        if base_actual_emit_ms is None:
+            base_actual_emit_ms = base_monotonic_ms
+
+        records: list[HapticEventRecord] = []
+        previous_offset_ms = 0
+        step_count = len(sequence)
+        for index, step in enumerate(sequence):
+            offset_ms = _matrix_sequence_offset_ms(step)
+            channels = _matrix_sequence_channel_list(step)
+            step_kwargs = dict(kwargs)
+            step_kwargs.update(
+                channel_list=channels,
+                matrix_sequence_step_index=index + 1,
+                matrix_sequence_step_count=step_count,
+                matrix_sequence_offset_ms=offset_ms,
+                monotonic_ms=float(base_monotonic_ms) + float(offset_ms),
+                actual_emit_ms=float(base_actual_emit_ms) + float(offset_ms),
+                source_event_name="" if index == 0 else str(event_name),
+                note=(
+                    "matrix_sequence"
+                    if index == 0
+                    else f"matrix_sequence_step_source={event_name}"
+                ),
+            )
+            record = self._record_event(
+                str(event_name) if index == 0 else f"{event_name}_matrix_step_{index + 1}",
+                "matrix",
+                submit_tcp=False,
+                **step_kwargs,
+            )
+            records.append(record)
+            previous_offset_ms = offset_ms
+
+        if not records:
+            raise ValueError("matrix_sequence must contain at least one step.")
+        if records[0].tcp_enabled and self._matrix_worker is not None:
+            previous_offset_ms = 0
+            steps: list[MatrixSendStep] = []
+            for record in records:
+                offset_ms = int(record.matrix_sequence_offset_ms or 0)
+                delay_ms = max(0, offset_ms - previous_offset_ms)
+                steps.append(
+                    MatrixSendStep(
+                        record=record,
+                        packet=encode_matrix_channel_packet(record.channel_list),
+                        role="main",
+                        delay_ms=float(delay_ms),
+                    )
+                )
+                previous_offset_ms = offset_ms
+            queued = self._matrix_worker.submit_sequence(tuple(steps))
+            for record in records:
+                record.tcp_queued = bool(queued)
+                print(_haptic_console_line(record))
+        return records[0]
+
     def write_csv(self, path: str | Path) -> Path:
         self.poll_due_control_commands(float("inf"))
         self.close()
@@ -470,6 +564,9 @@ class SimpleHapticSender:
         command_label: str | None = None,
         command_id: int | None = None,
         channel_list: list[int] | tuple[int, ...] | None = None,
+        matrix_sequence_step_index: int | None = None,
+        matrix_sequence_step_count: int | None = None,
+        matrix_sequence_offset_ms: int | None = None,
         duration_ms: int | None = None,
         sampled_duration_ms: int | None = None,
         event_end_monotonic_ms: float | None = None,
@@ -512,6 +609,7 @@ class SimpleHapticSender:
         end_reason: str = "",
         haptic_episode_completed: bool = False,
         note: str = "",
+        submit_tcp: bool = True,
     ) -> HapticEventRecord:
         index = len(self.records) if event_index is None else int(event_index)
         target_enabled = (
@@ -553,6 +651,21 @@ class SimpleHapticSender:
             command_label=command_label,
             command_id=int(command_id) if command_id is not None else None,
             channel_list=_validate_channel_list(channel_list or ()),
+            matrix_sequence_step_index=(
+                int(matrix_sequence_step_index)
+                if matrix_sequence_step_index is not None
+                else None
+            ),
+            matrix_sequence_step_count=(
+                int(matrix_sequence_step_count)
+                if matrix_sequence_step_count is not None
+                else None
+            ),
+            matrix_sequence_offset_ms=(
+                int(matrix_sequence_offset_ms)
+                if matrix_sequence_offset_ms is not None
+                else None
+            ),
             duration_ms=int(duration_ms) if duration_ms is not None else None,
             sampled_duration_ms=(
                 int(sampled_duration_ms) if sampled_duration_ms is not None else None
@@ -631,7 +744,7 @@ class SimpleHapticSender:
             haptic_episode_completed=bool(haptic_episode_completed),
             note=";".join(notes),
         )
-        if tcp_enabled:
+        if tcp_enabled and submit_tcp:
             self._submit_tcp(record, modality=modality)
             print(
                 _haptic_console_line(record)
@@ -776,6 +889,30 @@ def _validate_channel_list(channels: list[int] | tuple[int, ...]) -> list[int]:
         if channel < 0 or channel > 127:
             raise ValueError("matrix channel must be in 0..127.")
         result.append(int(channel))
+    return result
+
+
+def _matrix_sequence_offset_ms(step: Any) -> int:
+    if isinstance(step, dict):
+        value = step.get("offset_ms", 0)
+    else:
+        value = getattr(step, "offset_ms", 0)
+    if isinstance(value, bool):
+        raise ValueError("matrix_sequence offset_ms must be an integer.")
+    result = int(value)
+    if result < 0:
+        raise ValueError("matrix_sequence offset_ms must be non-negative.")
+    return result
+
+
+def _matrix_sequence_channel_list(step: Any) -> list[int]:
+    if isinstance(step, dict):
+        channels = step.get("channel_list", ())
+    else:
+        channels = getattr(step, "channel_list", ())
+    result = _validate_channel_list(tuple(channels or ()))
+    if not result:
+        raise ValueError("matrix_sequence channel_list must be non-empty.")
     return result
 
 

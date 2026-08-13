@@ -1,0 +1,51 @@
+contact:
+  - offset_ms: 0
+    channel_list: [85]
+  - offset_ms: 40
+    channel_list: [81,82,83,84,86,87,88,89]
+duration_ms: 1000
+
+release:
+  - offset_ms: 0
+    channel_list: [81,82,83,84,86,87,88,89]
+  - offset_ms: 40
+    channel_list: [85]
+duration_ms: 1000
+
+slip:
+  - offset_ms: 0
+    channel_list: [81,82,83]
+  - offset_ms: 50
+    channel_list: [84,85,86]
+  - offset_ms: 100
+    channel_list: [87,88,89]
+  - offset_ms: 150
+    channel_list: [82,84,87]
+  - offset_ms: 200
+    channel_list: [81,85,88]
+  - offset_ms: 250
+    channel_list: [83,86,89]   
+duration_ms: 2000
+
+  - name: up
+    modality: matrix
+    channel_list: [82, 84 ,87]
+    duration_ms: 1000
+
+  - name: right
+    modality: matrix
+    channel_list: [87, 88, 89]
+    duration_ms: 1000
+
+  - name: left
+    modality: matrix
+    channel_list: [81, 82, 83]
+    duration_ms: 1000
+
+
+  - name: down
+    modality: matrix
+    channel_list: [83, 86, 89]
+    duration_ms: 1000
+
+

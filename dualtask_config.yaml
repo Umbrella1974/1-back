@@ -81,8 +81,8 @@ matrix_tcp:
 haptic_defaults:
   vibration_duration_ms: [150, 300]
   matrix_duration_ms: [1000, 2000]
-  inter_event_gap_ms: [5000, 10000]
-  contact_onset_delay_ms: [5000, 20000]
+  inter_event_gap_ms: [9000, 13000]
+  contact_onset_delay_ms: [1000, 2000]
   release_duration_ms: [3000, 5000]
 
 haptic_feedback_display:

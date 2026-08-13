@@ -514,21 +514,42 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     )
     vibration_tcp_config = config.get("vibration_tcp") or {}
     matrix_tcp_config = config.get("matrix_tcp") or {}
-    vibration_enabled = bool(haptic_config.get("vibration_enabled", False))
-    matrix_enabled = bool(haptic_config.get("matrix_enabled", False))
-    vibration_tcp_enabled = vibration_enabled and bool(vibration_tcp_config.get("enabled", False))
-    matrix_tcp_enabled = matrix_enabled and bool(matrix_tcp_config.get("enabled", False))
+    vibration_enabled = _bool_config_value(
+        haptic_config.get("vibration_enabled", False),
+        "haptic.vibration_enabled",
+    )
+    matrix_enabled = _bool_config_value(
+        haptic_config.get("matrix_enabled", False),
+        "haptic.matrix_enabled",
+    )
+    vibration_tcp_enabled = vibration_enabled and _bool_config_value(
+        vibration_tcp_config.get("enabled", False),
+        "vibration_tcp.enabled",
+    )
+    matrix_tcp_enabled = matrix_enabled and _bool_config_value(
+        matrix_tcp_config.get("enabled", False),
+        "matrix_tcp.enabled",
+    )
     sender_config = SimpleHapticSenderConfig(
         vibration_enabled=vibration_enabled,
         matrix_enabled=matrix_enabled,
-        visual_text_cue_enabled=bool(haptic_config.get("visual_text_cue_enabled", False)),
+        visual_text_cue_enabled=_bool_config_value(
+            haptic_config.get("visual_text_cue_enabled", False),
+            "haptic.visual_text_cue_enabled",
+        ),
         disabled_mode=not (vibration_tcp_enabled or matrix_tcp_enabled),
         vibration_tcp_enabled=vibration_tcp_enabled,
-        vibration_required=bool(vibration_tcp_config.get("required", False)),
+        vibration_required=_bool_config_value(
+            vibration_tcp_config.get("required", False),
+            "vibration_tcp.required",
+        ),
         vibration_host=str(vibration_tcp_config.get("host", "127.0.0.1")),
         vibration_port=int(vibration_tcp_config.get("port", 12346)),
         matrix_tcp_enabled=matrix_tcp_enabled,
-        matrix_required=bool(matrix_tcp_config.get("required", False)),
+        matrix_required=_bool_config_value(
+            matrix_tcp_config.get("required", False),
+            "matrix_tcp.required",
+        ),
         matrix_host=str(matrix_tcp_config.get("host", "127.0.0.1")),
         matrix_port=int(matrix_tcp_config.get("port", 12345)),
         vibration_connect_timeout_s=float(vibration_tcp_config.get("connect_timeout_s", 2.0)),
@@ -536,7 +557,10 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         matrix_connect_timeout_s=float(matrix_tcp_config.get("connect_timeout_s", 2.0)),
         matrix_send_timeout_s=float(matrix_tcp_config.get("send_timeout_s", 0.2)),
         max_queue_size=int(haptic_config.get("max_queue_size", 128)),
-        matrix_latest_only=bool(haptic_config.get("matrix_latest_only", True)),
+        matrix_latest_only=_bool_config_value(
+            haptic_config.get("matrix_latest_only", True),
+            "haptic.matrix_latest_only",
+        ),
     )
     sender = SimpleHapticSender(sender_config, session_id=session_id)
     scheduler_config = HapticTrialSchedulerConfig(
@@ -1391,6 +1415,18 @@ def _list_or_none(value: tuple[int, int] | None) -> list[int] | None:
     if value is None:
         return None
     return [int(value[0]), int(value[1])]
+
+
+def _bool_config_value(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "y", "1", "on"}:
+            return True
+        if normalized in {"false", "no", "n", "0", "off"}:
+            return False
+    raise ValueError(f"{name} must be true or false.")
 
 
 def _append_no_haptic_event_warnings(

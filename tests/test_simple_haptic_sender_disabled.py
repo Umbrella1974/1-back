@@ -222,6 +222,46 @@ def test_record_scheduled_event_respects_vibration_left_right_modality(
     assert record.not_sent_reason == "disabled_mode_no_tcp"
 
 
+def test_record_scheduled_event_respects_matrix_contact_sequence() -> None:
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(vibration_enabled=False, matrix_enabled=True),
+        session_id="session-matrix-contact",
+        wall_time_fn=lambda: 0.0,
+    )
+    scheduled = SimpleNamespace(
+        haptic_trial_index=0,
+        event_index=0,
+        event_name="contact",
+        modality="matrix",
+        command_label=None,
+        command_id=None,
+        channel_list=(),
+        matrix_sequence=(
+            SimpleNamespace(offset_ms=0, channel_list=(1, 2, 3)),
+            SimpleNamespace(offset_ms=120, channel_list=(4, 5, 6)),
+        ),
+        duration_ms=200,
+        trigger_zone="open_zone",
+        actual_zone_at_emit="open_zone",
+        trigger_pinch_distance=0.08,
+        trigger_frame_index=1,
+        actual_emit_monotonic_ms=1000.0,
+        actual_emit_ms=1000.0,
+    )
+
+    record = sender.record_scheduled_event(scheduled)
+
+    assert record.event_name == "contact"
+    assert record.modality == "matrix"
+    assert record.channel_list == [1, 2, 3]
+    assert record.matrix_sequence_step_index == 1
+    assert record.matrix_sequence_step_count == 2
+    assert sender.records[1].event_name == "contact_matrix_step_2"
+    assert sender.records[1].source_event_name == "contact"
+    assert sender.records[1].channel_list == [4, 5, 6]
+    assert sender.records[1].monotonic_ms == 1120.0
+
+
 def test_enabled_vibration_sender_queues_vendor_tcp_payload(tmp_path) -> None:
     sent_payloads: list[bytes] = []
 
@@ -321,6 +361,58 @@ def test_enabled_matrix_sender_queues_vendor_tcp_packet(tmp_path) -> None:
     assert record.tcp_queued is True
     assert record.tcp_success is True
     assert record.send_status == "sent"
+
+
+def test_enabled_matrix_sender_queues_matrix_sequence_payloads(tmp_path) -> None:
+    sent_payloads: list[bytes] = []
+
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=False,
+            matrix_enabled=True,
+            disabled_mode=False,
+            matrix_tcp_enabled=True,
+            matrix_socket_factory=_socket_factory(sent_payloads),
+        ),
+        session_id="tcp-matrix-sequence",
+        wall_time_fn=lambda: 0.0,
+    )
+    scheduled = SimpleNamespace(
+        haptic_trial_index=0,
+        event_index=0,
+        event_name="contact",
+        modality="matrix",
+        command_label=None,
+        command_id=None,
+        channel_list=(),
+        matrix_sequence=[
+            {"offset_ms": 0, "channel_list": [1, 2, 3]},
+            {"offset_ms": 1, "channel_list": [4, 5, 6]},
+        ],
+        duration_ms=10,
+        trigger_zone="open_zone",
+        actual_zone_at_emit="open_zone",
+        trigger_pinch_distance=0.08,
+        trigger_frame_index=1,
+        actual_emit_monotonic_ms=1000.0,
+        actual_emit_ms=1000.0,
+    )
+
+    record = sender.record_scheduled_event(scheduled)
+    sender.write_csv(tmp_path / "haptic_events.csv")
+
+    assert sent_payloads == [
+        b"\xAA\x55\xAA\x55\x03\x01\x02\x03\x06",
+        b"\xAA\x55\xAA\x55\x03\x04\x05\x06\x0f",
+    ]
+    assert record.tcp_enabled is True
+    assert record.tcp_queued is True
+    assert record.tcp_success is True
+    assert [item.event_name for item in sender.records] == [
+        "contact",
+        "contact_matrix_step_2",
+    ]
+    assert all(item.send_status == "sent" for item in sender.records)
 
 
 def test_tcp_not_required_connection_failure_records_not_connected() -> None:

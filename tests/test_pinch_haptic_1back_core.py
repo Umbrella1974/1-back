@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import sys
 
+import pytest
+
 from dualtask_logger import DualTaskLogger
 from haptic_plan_config import haptic_plan_config_from_dict
 from haptic_trial_scheduler import HapticTrialSchedulerConfig
@@ -12,6 +14,7 @@ from pinch_calibration import PinchCalibrationResult
 from run_pinch_haptic_1back import (
     NBackResponseInput,
     _append_no_haptic_event_warnings,
+    _bool_config_value,
     _calibration_summary_fields,
     _pygame_key_constant,
     _should_enter_formal_phase,
@@ -110,6 +113,31 @@ def test_pygame_key_constant_accepts_space_aliases_without_importing_pygame() ->
     assert _pygame_key_constant(FakePygame, "left") == 276
     assert _pygame_key_constant(FakePygame, "a") == 97
     assert _pygame_key_constant(FakePygame, "enter") == 13
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("false", False),
+        ("yes", True),
+        ("no", False),
+        ("1", True),
+        ("0", False),
+    ],
+)
+def test_bool_config_value_accepts_yaml_and_string_booleans(
+    value,
+    expected: bool,
+) -> None:
+    assert _bool_config_value(value, "example.flag") is expected
+
+
+def test_bool_config_value_rejects_ambiguous_values() -> None:
+    with pytest.raises(ValueError, match="example.flag must be true or false"):
+        _bool_config_value("maybe", "example.flag")
 
 
 def test_failed_calibration_summary_blocks_formal_phase() -> None:

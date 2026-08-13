@@ -1,0 +1,98 @@
+plan_id: only-matrix-1
+description: Contact first, then slip-up-right-left-left, release last.
+random_seed: 123
+
+timing:
+  contact_onset_delay_ms: [1000, 2000]
+  inter_event_gap_ms: [9000,13000]
+  refractory_ms: 3000
+
+events:
+  - name: contact
+    modality: matrix
+    matrix_sequence:
+      - offset_ms: 0
+        channel_list: [85]
+      - offset_ms: 40
+        channel_list: [81, 82, 83, 84, 86, 87, 88, 89]
+    duration_ms: 1000
+    trigger_zone: open_zone
+    onset_delay_ms: [1000, 2000]
+
+  - name: slip
+    modality: matrix
+    matrix_sequence:
+      - offset_ms: 0
+        channel_list: [81, 82, 83]
+      - offset_ms: 50
+        channel_list: [84, 85, 86]
+      - offset_ms: 100
+        channel_list: [87, 88, 89]
+      - offset_ms: 150
+        channel_list: [82, 84, 87]
+      - offset_ms: 200
+        channel_list: [81, 85, 88]
+      - offset_ms: 250
+        channel_list: [83, 86, 89]
+    duration_ms: 2000
+    trigger_zone: closed_zone
+    nback_trial_window: [6,13]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000
+
+  - name: up
+    modality: matrix
+    channel_list: [82, 84, 87]
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [13,20]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000
+
+  - name: right
+    modality: matrix
+    channel_list: [87, 88, 89]
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [20,27]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000
+
+  - name: left
+    modality: matrix
+    channel_list: [81, 82, 83]
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [27,34]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000
+
+  - name: left
+    modality: matrix
+    channel_list: [81, 82, 83]
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [34,41]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000
+
+  - name: release
+    modality: matrix
+    matrix_sequence:
+      - offset_ms: 0
+        channel_list: [81, 82, 83, 84, 86, 87, 88, 89]
+      - offset_ms: 40
+        channel_list: [85]
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [41,49]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000
+
+zones:
+  open_zone:
+    lower: auto_a
+    upper: auto_max
+  closed_zone:
+    lower: auto_min
+    upper: auto_a

@@ -272,3 +272,26 @@ def test_update_emits_at_most_one_event_even_when_onsets_are_overdue() -> None:
     assert len(slip) == 1
     assert len(left) == 1
     assert left[0].original_planned_onset_ms == 6800.0
+
+
+def test_scheduler_carries_matrix_sequence() -> None:
+    payload = _plan(contact_delay=[0, 0], event_gap=[0, 0]).to_dict()
+    payload["events"][2].pop("channel_list")
+    payload["events"][2]["duration_ms"] = 200
+    payload["events"][2]["matrix_sequence"] = [
+        {"offset_ms": 0, "channel_list": [1, 2, 3]},
+        {"offset_ms": 120, "channel_list": [4, 5, 6]},
+    ]
+    scheduler = HapticTrialScheduler(haptic_plan_config_from_dict(payload))
+
+    scheduler.update(zone="open_zone", now_ms=1000.0)
+    scheduler.update(zone="open_zone", now_ms=1000.0)
+    scheduler.update(zone="closed_zone", now_ms=1000.0)
+    scheduler.update(zone="closed_zone", now_ms=1001.0)
+    event = scheduler.update(zone="closed_zone", now_ms=1801.0)[0]
+
+    assert event.event_name == "left"
+    assert event.channel_list == ()
+    assert len(event.matrix_sequence) == 2
+    assert event.matrix_sequence[1].offset_ms == 120
+    assert event.matrix_sequence[1].channel_list == (4, 5, 6)

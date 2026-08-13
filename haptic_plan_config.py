@@ -11,6 +11,7 @@ from typing import Any
 LEGAL_MODALITIES = {"vibration", "matrix"}
 LEGAL_ONSET_POLICY_TYPES = {"when_enter_zone", "after_zone_transition", "after_previous"}
 AUTO_ZONE_VALUES = {"auto_min", "auto_a", "auto_max"}
+MAX_MATRIX_SEQUENCE_STEPS = 32
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,18 @@ class HapticOnsetPolicy:
 
 
 @dataclass(frozen=True)
+class MatrixSequenceStep:
+    offset_ms: int
+    channel_list: tuple[int, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "offset_ms": self.offset_ms,
+            "channel_list": list(self.channel_list),
+        }
+
+
+@dataclass(frozen=True)
 class HapticPlanEvent:
     name: str
     modality: str
@@ -38,6 +51,7 @@ class HapticPlanEvent:
     end_command_label: str | None = None
     end_command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
+    matrix_sequence: tuple[MatrixSequenceStep, ...] = field(default_factory=tuple)
     payload: dict[str, Any] | None = None
     onset_delay_ms: tuple[int, int] | None = None
     onset_gap_after_previous_ms: tuple[int, int] | None = None
@@ -48,6 +62,9 @@ class HapticPlanEvent:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["channel_list"] = list(self.channel_list)
+        payload["matrix_sequence"] = [step.to_dict() for step in self.matrix_sequence]
+        if not self.matrix_sequence:
+            payload.pop("matrix_sequence", None)
         if payload.get("duration_ms") is None:
             payload.pop("duration_ms", None)
         if self.duration_ms_range is not None:
@@ -230,6 +247,7 @@ def _parse_event(
         "trigger_zone",
         "onset_policy",
         "channel_list",
+        "matrix_sequence",
         "payload",
         "onset_delay_ms",
         "onset_gap_after_previous_ms",
@@ -281,6 +299,10 @@ def _parse_event(
         else None
     )
     channel_list = _channel_list(payload.get("channel_list", ()), f"{name_prefix}.channel_list")
+    matrix_sequence = _matrix_sequence(
+        payload.get("matrix_sequence"),
+        f"{name_prefix}.matrix_sequence",
+    )
     event_payload = _optional_mapping(payload.get("payload"), f"{name_prefix}.payload")
     onset_delay_ms = (
         _range_ms(payload.get("onset_delay_ms"), f"{name_prefix}.onset_delay_ms")
@@ -328,8 +350,20 @@ def _parse_event(
         )
     if modality == "vibration" and command_label is None and command_id is None:
         raise ValueError(f"{name_prefix} vibration event requires command_label or command_id.")
-    if modality == "matrix" and not channel_list and event_payload is None:
-        raise ValueError(f"{name_prefix} matrix event requires non-empty channel_list or payload.")
+    if modality != "matrix" and matrix_sequence:
+        raise ValueError(f"{name_prefix}.matrix_sequence requires modality: matrix.")
+    if matrix_sequence and channel_list:
+        raise ValueError(f"{name_prefix} cannot use both channel_list and matrix_sequence.")
+    if matrix_sequence and event_payload is not None:
+        raise ValueError(f"{name_prefix} cannot use both payload and matrix_sequence.")
+    if (
+        matrix_sequence
+        and duration_ms is not None
+        and matrix_sequence[-1].offset_ms > duration_ms
+    ):
+        raise ValueError(f"{name_prefix}.duration_ms must cover matrix_sequence offsets.")
+    if modality == "matrix" and not channel_list and event_payload is None and not matrix_sequence:
+        raise ValueError(f"{name_prefix} matrix event requires non-empty channel_list, matrix_sequence, or payload.")
     if modality == "matrix" and (end_command_label is not None or end_command_id is not None):
         raise ValueError(f"{name_prefix} matrix event cannot use end_command_id.")
     if event_name == "contact" and onset_gap_after_previous_ms is not None:
@@ -349,6 +383,7 @@ def _parse_event(
         end_command_label=end_command_label,
         end_command_id=end_command_id,
         channel_list=channel_list,
+        matrix_sequence=matrix_sequence,
         payload=event_payload,
         onset_delay_ms=onset_delay_ms,
         onset_gap_after_previous_ms=onset_gap_after_previous_ms,
@@ -567,6 +602,33 @@ def _channel_list(value: Any, name: str) -> tuple[int, ...]:
             raise ValueError(f"{name} channel must be in 0..127.")
         channels.append(int(channel))
     return tuple(channels)
+
+
+def _matrix_sequence(value: Any, name: str) -> tuple[MatrixSequenceStep, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{name} must be a non-empty list.")
+    if len(value) > MAX_MATRIX_SEQUENCE_STEPS:
+        raise ValueError(f"{name} must contain at most {MAX_MATRIX_SEQUENCE_STEPS} steps.")
+    steps: list[MatrixSequenceStep] = []
+    previous_offset: int | None = None
+    for index, item in enumerate(value):
+        item_name = f"{name}[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{item_name} must be an object.")
+        unknown = sorted(set(item) - {"offset_ms", "channel_list"})
+        if unknown:
+            raise ValueError(f"unknown {item_name} keys: {', '.join(unknown)}")
+        offset_ms = _non_negative_int(item.get("offset_ms", 0), f"{item_name}.offset_ms")
+        if previous_offset is not None and offset_ms < previous_offset:
+            raise ValueError(f"{item_name}.offset_ms must be >= previous offset.")
+        channel_list = _channel_list(item.get("channel_list"), f"{item_name}.channel_list")
+        if not channel_list:
+            raise ValueError(f"{item_name}.channel_list must be non-empty.")
+        steps.append(MatrixSequenceStep(offset_ms=offset_ms, channel_list=channel_list))
+        previous_offset = offset_ms
+    return tuple(steps)
 
 
 def _range_ms(value: Any, name: str) -> tuple[int, int]:

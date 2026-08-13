@@ -26,6 +26,7 @@ class MatrixSendStep:
     record: MutableHapticRecord
     packet: bytes
     role: str = "main"
+    delay_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -187,6 +188,8 @@ class MatrixTcpWorker:
                 _mark_task_not_sent(task, "not_connected", "not_connected")
             return
         for index, step in enumerate(task.steps):
+            if step.delay_ms > 0:
+                time.sleep(float(step.delay_ms) / 1000.0)
             try:
                 sock.sendall(step.packet)
             except Exception as exc:

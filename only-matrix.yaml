@@ -6,7 +6,7 @@ session:
   duration_s: 140
   #
   #
-  haptic_plan_config: haptic_plan_config_example.yaml
+  haptic_plan_config: haptic-plan-only-matrix-1.yaml
   #
   #
   end_policy: stop_on_haptic_release
@@ -71,7 +71,7 @@ vibration_tcp:
 
 matrix_tcp:
   enabled: true
-  required: false
+  required: true
   host: 192.168.1.9
   port: 12345
   connect_timeout_s: 2.0
@@ -80,10 +80,10 @@ matrix_tcp:
 haptic_defaults:
   vibration_duration_ms: [150, 300]
   matrix_duration_ms: [1000, 2000]
-  inter_event_gap_ms: [5000, 10000]
-  contact_onset_delay_ms: [5000, 20000]
+  inter_event_gap_ms: [9000, 13000]
+  contact_onset_delay_ms: [1000, 2000]
   release_duration_ms: [3000, 5000]
-
+  
 haptic_feedback_display:
   mode: console
   print_on_emit: true

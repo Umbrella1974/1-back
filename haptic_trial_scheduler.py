@@ -78,6 +78,7 @@ class ScheduledHapticEvent:
     end_command_label: str | None = None
     end_command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
+    matrix_sequence: tuple[Any, ...] = field(default_factory=tuple)
     duration_ms: int = 0
     sampled_duration_ms: int | None = None
     global_default_used: bool = False
@@ -119,6 +120,17 @@ class ScheduledHapticEvent:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["channel_list"] = list(self.channel_list)
+        payload["matrix_sequence"] = [
+            (
+                step.to_dict()
+                if hasattr(step, "to_dict")
+                else {
+                    "offset_ms": int(getattr(step, "offset_ms")),
+                    "channel_list": list(getattr(step, "channel_list")),
+                }
+            )
+            for step in self.matrix_sequence
+        ]
         if self.nback_trial_window is not None:
             payload["nback_trial_window"] = list(self.nback_trial_window)
         return payload
@@ -392,6 +404,7 @@ class HapticTrialScheduler:
             end_command_label=event.end_command_label,
             end_command_id=event.end_command_id,
             channel_list=event.channel_list,
+            matrix_sequence=event.matrix_sequence,
             duration_ms=pending.sampled_duration_ms,
             sampled_duration_ms=pending.sampled_duration_ms,
             global_default_used=pending.global_default_used,

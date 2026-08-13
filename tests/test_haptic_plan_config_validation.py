@@ -223,6 +223,59 @@ def test_trial_window_and_wrist_neutral_gate_round_trip() -> None:
     assert second.to_dict()["events"][2]["nback_trial_window"] == [20, 25]
 
 
+def test_matrix_sequence_round_trips() -> None:
+    payload = _valid_plan()
+    payload["events"][2].pop("channel_list")
+    payload["events"][2]["duration_ms"] = 200
+    payload["events"][2]["matrix_sequence"] = [
+        {"offset_ms": 0, "channel_list": [1, 2, 3]},
+        {"offset_ms": 120, "channel_list": [4, 5, 6]},
+    ]
+
+    plan = haptic_plan_config_from_dict(payload)
+    second = haptic_plan_config_from_dict(plan.to_dict())
+
+    assert second.events[2].matrix_sequence[0].offset_ms == 0
+    assert second.events[2].matrix_sequence[0].channel_list == (1, 2, 3)
+    assert second.events[2].matrix_sequence[1].offset_ms == 120
+    assert second.events[2].to_dict()["matrix_sequence"][1]["channel_list"] == [4, 5, 6]
+
+
+def test_matrix_sequence_rejects_unsorted_offsets() -> None:
+    payload = _valid_plan()
+    payload["events"][2].pop("channel_list")
+    payload["events"][2]["matrix_sequence"] = [
+        {"offset_ms": 100, "channel_list": [1]},
+        {"offset_ms": 50, "channel_list": [2]},
+    ]
+
+    with pytest.raises(ValueError, match="offset_ms must be >= previous offset"):
+        haptic_plan_config_from_dict(payload)
+
+
+def test_matrix_sequence_requires_duration_cover_offsets() -> None:
+    payload = _valid_plan()
+    payload["events"][2].pop("channel_list")
+    payload["events"][2]["duration_ms"] = 99
+    payload["events"][2]["matrix_sequence"] = [
+        {"offset_ms": 0, "channel_list": [1]},
+        {"offset_ms": 100, "channel_list": [2]},
+    ]
+
+    with pytest.raises(ValueError, match="duration_ms must cover matrix_sequence offsets"):
+        haptic_plan_config_from_dict(payload)
+
+
+def test_matrix_sequence_requires_matrix_modality() -> None:
+    payload = _valid_plan()
+    payload["events"][1]["matrix_sequence"] = [
+        {"offset_ms": 0, "channel_list": [1]},
+    ]
+
+    with pytest.raises(ValueError, match="matrix_sequence requires modality: matrix"):
+        haptic_plan_config_from_dict(payload)
+
+
 def test_wrist_neutral_timeout_requires_gate_enabled() -> None:
     payload = _valid_plan()
     payload["events"][2]["wrist_neutral_timeout_ms"] = 3000
