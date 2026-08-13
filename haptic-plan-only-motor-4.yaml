@@ -19,30 +19,30 @@ events:
     require_wrist_neutral_before_emit: true
     wrist_neutral_timeout_ms: 3000
     
+  - name: right
+    modality: vibration
+    command_label: wrist_right
+    command_id: 9
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [6,13]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000    
+
   - name: slip
     modality: vibration
     command_label: slip
     command_id: 11
     duration_ms: 2000
     trigger_zone: closed_zone
-    nback_trial_window: [6,13]
-    require_wrist_neutral_before_emit: true
-    wrist_neutral_timeout_ms: 3000    
-
-  - name: up
-    modality: vibration
-    command_label: wrist_up
-    command_id: 8
-    duration_ms: 1000
-    trigger_zone: closed_zone
     nback_trial_window: [13,20]
     require_wrist_neutral_before_emit: true
     wrist_neutral_timeout_ms: 3000    
 
-  - name: right
+  - name: down
     modality: vibration
-    command_label: wrist_right
-    command_id: 9
+    command_label: wrist_down
+    command_id: 10
     duration_ms: 1000
     trigger_zone: closed_zone
     nback_trial_window: [20,27]
@@ -50,21 +50,21 @@ events:
     wrist_neutral_timeout_ms: 3000    
 
 
-  - name: left
+  - name: slip
     modality: vibration
-    command_label: wrist_left
-    command_id: 5
-    duration_ms: 1000
+    command_label: slip
+    command_id: 11
+    duration_ms: 2000
     trigger_zone: closed_zone
     nback_trial_window: [27,34]
     require_wrist_neutral_before_emit: true
     wrist_neutral_timeout_ms: 3000    
 
 
-  - name: left
+  - name: right
     modality: vibration
-    command_label: wrist_left
-    command_id: 5
+    command_label: wrist_right
+    command_id: 9
     duration_ms: 1000
     trigger_zone: closed_zone
     nback_trial_window: [34,41]
