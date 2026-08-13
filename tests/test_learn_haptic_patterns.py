@@ -33,9 +33,11 @@ def test_learning_session_extracts_only_matrix_sequences() -> None:
         "release",
     ]
     assert all(event.modality == "matrix" for event in session.events)
-    assert len(event_by_name["contact"].matrix_sequence) == 2
-    assert len(event_by_name["slip"].matrix_sequence) == 6
-    assert len(event_by_name["release"].matrix_sequence) == 2
+    assert event_by_name["contact"].channel_list == (81, 82, 83, 84, 86, 87, 88, 89)
+    assert len(event_by_name["slip"].matrix_sequence) == 2
+    assert event_by_name["slip"].matrix_sequence[0].channel_list == (82, 89)
+    assert event_by_name["slip"].matrix_sequence[1].channel_list == (83, 87)
+    assert event_by_name["release"].channel_list == (85,)
 
 
 def test_learning_sender_config_matches_only_motor_tcp_flags() -> None:

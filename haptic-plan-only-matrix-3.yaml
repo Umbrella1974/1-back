@@ -10,11 +10,7 @@ timing:
 events:
   - name: contact
     modality: matrix
-    matrix_sequence:
-      - offset_ms: 0
-        channel_list: [85]
-      - offset_ms: 40
-        channel_list: [81, 82, 83, 84, 86, 87, 88, 89]
+    channel_list: [81, 82, 83, 84, 86, 87, 88, 89]
     duration_ms: 1000
     trigger_zone: open_zone
     onset_delay_ms: [1000, 2000]
@@ -41,17 +37,9 @@ events:
     modality: matrix
     matrix_sequence:
       - offset_ms: 0
-        channel_list: [81, 82, 83]
+        channel_list: [82, 89]
       - offset_ms: 50
-        channel_list: [84, 85, 86]
-      - offset_ms: 100
-        channel_list: [87, 88, 89]
-      - offset_ms: 150
-        channel_list: [82, 84, 87]
-      - offset_ms: 200
-        channel_list: [81, 85, 88]
-      - offset_ms: 250
-        channel_list: [83, 86, 89]
+        channel_list: [83, 87]
     duration_ms: 3000
     trigger_zone: closed_zone
     nback_trial_window: [20,27]
@@ -78,11 +66,7 @@ events:
 
   - name: release
     modality: matrix
-    matrix_sequence:
-      - offset_ms: 0
-        channel_list: [81, 82, 83, 84, 86, 87, 88, 89]
-      - offset_ms: 40
-        channel_list: [85]
+    channel_list: [85]
     duration_ms: 1000
     trigger_zone: closed_zone
     nback_trial_window: [41,49]
