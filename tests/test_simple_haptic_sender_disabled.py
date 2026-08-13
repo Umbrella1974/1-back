@@ -182,6 +182,46 @@ def test_record_scheduled_event_dispatches_to_public_send_methods(
     assert record.actual_zone_at_emit == "open_zone"
 
 
+@pytest.mark.parametrize(
+    ("event_name", "command_id"),
+    [
+        ("left", 5),
+        ("right", 9),
+    ],
+)
+def test_record_scheduled_event_respects_vibration_left_right_modality(
+    event_name: str,
+    command_id: int,
+) -> None:
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(vibration_enabled=True, matrix_enabled=False),
+        session_id="session-vibration-direction",
+        wall_time_fn=lambda: 0.0,
+    )
+    scheduled = SimpleNamespace(
+        haptic_trial_index=0,
+        event_index=0,
+        event_name=event_name,
+        modality="vibration",
+        command_label=f"wrist_{event_name}",
+        command_id=command_id,
+        channel_list=(),
+        duration_ms=1000,
+        trigger_zone="closed_zone",
+        actual_zone_at_emit="closed_zone",
+        trigger_pinch_distance=0.02,
+        trigger_frame_index=1,
+    )
+
+    record = sender.record_scheduled_event(scheduled)
+
+    assert record.event_name == event_name
+    assert record.modality == "vibration"
+    assert record.command_id == command_id
+    assert record.channel_list == []
+    assert record.not_sent_reason == "disabled_mode_no_tcp"
+
+
 def test_enabled_vibration_sender_queues_vendor_tcp_payload(tmp_path) -> None:
     sent_payloads: list[bytes] = []
 

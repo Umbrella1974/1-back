@@ -346,6 +346,7 @@ class SimpleHapticSender:
             end_reason=getattr(scheduled, "end_reason", ""),
             haptic_episode_completed=getattr(scheduled, "haptic_episode_completed", False),
         )
+        modality = str(getattr(scheduled, "modality", ""))
         if event_name == "contact":
             record = self.send_contact(**kwargs)
             self._schedule_vibration_end_command(scheduled, record)
@@ -358,17 +359,16 @@ class SimpleHapticSender:
             record = self.send_slip(**kwargs)
             self._schedule_vibration_end_command(scheduled, record)
             return record
-        if event_name == "left":
+        if event_name == "left" and modality == "matrix":
             return self.send_matrix_left(
                 list(getattr(scheduled, "channel_list", ()) or ()),
                 **kwargs,
             )
-        if event_name == "right":
+        if event_name == "right" and modality == "matrix":
             return self.send_matrix_right(
                 list(getattr(scheduled, "channel_list", ()) or ()),
                 **kwargs,
             )
-        modality = str(getattr(scheduled, "modality", ""))
         if modality == "vibration":
             record = self._record_event(event_name, "vibration", **kwargs)
             self._schedule_vibration_end_command(scheduled, record)
