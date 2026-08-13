@@ -21,6 +21,12 @@ MODE_CONFIGS = {
     "only-matrix": "only-matrix.yaml",
 }
 
+MODE_PLAN_PATTERNS = {
+    "dual": "haptic_plan_dual-*.yaml",
+    "only-motor": "haptic-plan-only-motor-*.yaml",
+    "only-matrix": "haptic-plan-only-matrix-*.yaml",
+}
+
 EVENT_LABELS = {
     "contact": "contact / 接触",
     "release": "release / 释放",
@@ -37,6 +43,7 @@ class LearningSession:
     mode_name: str
     config_path: Path
     plan_path: Path
+    plan_paths: tuple[Path, ...]
     plan: HapticPlanConfig
     events: tuple[HapticPlanEvent, ...]
     sender_config: SimpleHapticSenderConfig
@@ -49,7 +56,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.config:
-        _run_session(load_learning_session(Path(args.config), mode_name=Path(args.config).stem))
+        config_path = Path(args.config)
+        mode_name = args.mode or _mode_name_for_config_path(config_path)
+        _run_session(load_learning_session(config_path, mode_name=mode_name))
         return 0
     if args.mode:
         _run_session(load_learning_session(Path(MODE_CONFIGS[args.mode]), mode_name=args.mode))
@@ -64,11 +73,13 @@ def load_learning_session(config_path: str | Path, *, mode_name: str = "") -> Le
     session_config = _object_section(config, "session")
     plan_path = Path(session_config.get("haptic_plan_config", "haptic_plan_config_example.yaml"))
     plan = load_haptic_plan_config(plan_path)
-    events = unique_learning_events(plan)
+    plan_paths = _learning_plan_paths(mode_name or target.stem, plan_path)
+    events = unique_learning_events_from_plans(load_haptic_plan_config(path) for path in plan_paths)
     return LearningSession(
         mode_name=mode_name or target.stem,
         config_path=target,
         plan_path=plan_path,
+        plan_paths=plan_paths,
         plan=plan,
         events=events,
         sender_config=sender_config_from_learning_config(config),
@@ -78,14 +89,45 @@ def load_learning_session(config_path: str | Path, *, mode_name: str = "") -> Le
 def unique_learning_events(plan: HapticPlanConfig) -> tuple[HapticPlanEvent, ...]:
     """Return first occurrence of each event name, preserving plan order."""
 
+    return unique_learning_events_from_plans((plan,))
+
+
+def unique_learning_events_from_plans(
+    plans: tuple[HapticPlanConfig, ...] | list[HapticPlanConfig] | Any,
+) -> tuple[HapticPlanEvent, ...]:
+    """Return first occurrence of each non-release event across learning templates."""
+
     seen: set[str] = set()
     events: list[HapticPlanEvent] = []
-    for event in plan.events:
-        if event.name in seen:
-            continue
-        seen.add(event.name)
-        events.append(event)
+    release_event: HapticPlanEvent | None = None
+    for plan in plans:
+        for event in plan.events:
+            if event.name == "release":
+                if release_event is None:
+                    release_event = event
+                continue
+            if event.name in seen:
+                continue
+            seen.add(event.name)
+            events.append(event)
+    if release_event is not None and "release" not in seen:
+        events.append(release_event)
     return tuple(events)
+
+
+def _mode_name_for_config_path(config_path: Path) -> str:
+    for mode_name, configured_path in MODE_CONFIGS.items():
+        if config_path.name.lower() == Path(configured_path).name.lower():
+            return mode_name
+    return config_path.stem
+
+
+def _learning_plan_paths(mode_name: str, fallback_plan_path: Path) -> tuple[Path, ...]:
+    pattern = MODE_PLAN_PATTERNS.get(mode_name)
+    if not pattern:
+        return (fallback_plan_path,)
+    paths = tuple(sorted(Path(".").glob(pattern)))
+    return paths or (fallback_plan_path,)
 
 
 def sender_config_from_learning_config(config: dict[str, Any]) -> SimpleHapticSenderConfig:
@@ -152,6 +194,8 @@ def _run_session(session: LearningSession) -> bool:
     print(f"\nMode: {session.mode_name}")
     print(f"Config: {session.config_path}")
     print(f"Plan: {session.plan_path} ({session.plan.plan_id})")
+    if len(session.plan_paths) > 1:
+        print(f"Learning templates: {len(session.plan_paths)}")
     print(_sender_status_text(session.sender_config))
     sender = SimpleHapticSender(session.sender_config, session_id=f"learn_{session.mode_name}")
     last_event: HapticPlanEvent | None = None

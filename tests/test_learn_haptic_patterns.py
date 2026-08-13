@@ -13,6 +13,7 @@ def test_learning_session_extracts_unique_events_from_dual_plan() -> None:
         "up",
         "right",
         "left",
+        "down",
         "release",
     ]
     assert session.events[0].modality == "vibration"
@@ -30,6 +31,7 @@ def test_learning_session_extracts_only_matrix_sequences() -> None:
         "up",
         "right",
         "left",
+        "down",
         "release",
     ]
     assert all(event.modality == "matrix" for event in session.events)
@@ -40,6 +42,23 @@ def test_learning_session_extracts_only_matrix_sequences() -> None:
     assert event_by_name["slip"].matrix_sequence[1].offset_ms == 100
     assert event_by_name["slip"].matrix_sequence[1].channel_list == (83, 86, 89)
     assert event_by_name["release"].channel_list == (85,)
+
+
+def test_learning_session_extracts_down_from_only_motor_templates() -> None:
+    session = load_learning_session("only-motor.yaml", mode_name="only-motor")
+
+    event_by_name = {event.name: event for event in session.events}
+    assert [event.name for event in session.events] == [
+        "contact",
+        "slip",
+        "up",
+        "right",
+        "left",
+        "down",
+        "release",
+    ]
+    assert all(event.modality == "vibration" for event in session.events)
+    assert event_by_name["down"].command_id is not None
 
 
 def test_learning_sender_config_matches_only_motor_tcp_flags() -> None:
