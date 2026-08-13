@@ -32,18 +32,62 @@ python run_pinch_haptic_1back.py --config dualtask_config.yaml
 
 ```yaml
 session:
-  duration_s: 60
+  duration_s: 140
   haptic_plan_config: haptic_plan_config_example.yaml
   end_policy: stop_on_haptic_release
   allow_multiple_haptic_trials: false
   finish_active_haptic_before_exit: true
   post_release_recording_ms: 3000
-  post_release_continue_nback: false
+  post_release_continue_nback: true
+  release_nback_trial_window: [40, 50]
+  prerelease_haptic_complete_by_trial: 45
+  hold_release_until_nback_trial: true
+  finish_nback_after_haptic_release: true
 ```
 
-当前行为：release haptic event 发出后，程序进入 post-release recording；继续记录 MANUS/pinch 数据 3 秒，但 `post_release_continue_nback: false` 会让 1-back 不再继续出题。
+当前行为：
 
-如果希望 release 后 1-back 继续到整个程序停止，需要把这个语义改为 `post_release_continue_nback: true` 并确认 runner 在 post-release 阶段继续 tick/finalize n-back。下面的计划部分列出了具体修改路径。
+- release 前的 haptic event 按 `haptic_plan_config_example.yaml` 顺序和时间正常尽早发出。
+- 如果 release 在第 40 试次前已经轮到发出，runner 会先 hold 住 release。
+- 进入第 40 试次后，pending release 会真正发出。
+- release 发出后，haptic 结束，但 1-back 继续到 50 试次完成。
+- `post_release_recording_ms: 3000` 表示 release 后至少继续记录 3 秒；如果 1-back 还没完成，会继续记录到 1-back 完成。
+
+这里的试次号是 1-based：`release_nback_trial_window: [40, 50]` 表示用户理解的第 40 到第 50 试次，不是 Python 内部的 index 39-49。
+
+`duration_s` 需要足够长。当前 1-back 单试次约为：
+
+```text
+500ms fixation + 500ms stimulus + 1000-1500ms ISI = 2000-2500ms
+```
+
+因此：
+
+```text
+第 40 试次约 80-100s，平均约 90s
+第 45 试次约 90-112.5s，平均约 101s
+第 50 试次约 100-125s，平均约 112.5s
+```
+
+所以双任务配置里 `duration_s` 不建议低于 130；当前用 `140` 是为了覆盖随机 ISI 和 release 后补完 1-back 的余量。
+
+如果你在 haptic plan 里增加 release 前的触觉数量，需要重新估算间隔。推荐经验值：
+
+```yaml
+# release 前 3-6 个 haptic event
+onset_gap_after_previous_ms: [8000, 12000]
+
+# release 前 8-10 个 haptic event
+onset_gap_after_previous_ms: [5000, 8000]
+```
+
+`prerelease_haptic_complete_by_trial: 45` 是检查约束，不会自动压缩触觉间隔。如果 release 前的触觉到第 45 试次还没完成，summary 会写入 warning：
+
+```text
+prerelease_haptic_not_complete_by_trial_45
+```
+
+这说明当前 haptic 数量或间隔太大，需要调整 `haptic_plan_config_example.yaml` 或你自己的 haptic plan 文件。
 
 ### MANUS TCP
 

@@ -60,6 +60,11 @@ WRIST_ROTATION_TIMESERIES_FIELDS = [
     "wrist_rotation_class",
     "distance_to_left",
     "distance_to_right",
+    "wrist_up_down_valid",
+    "wrist_up_down_score",
+    "wrist_up_down_class",
+    "distance_to_up",
+    "distance_to_down",
     "note",
 ]
 

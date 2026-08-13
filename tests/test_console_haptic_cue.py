@@ -57,7 +57,7 @@ def test_console_mode_prints_matrix_channels_and_release_end() -> None:
     assert lines == [
         "[HAPTIC] trial=0 event=left_1 modality=matrix channels=[1, 2, 3]",
         "[HAPTIC] trial=0 event=release modality=vibration duration=150ms",
-        "[HAPTIC] release emitted; ending dual-task session.",
+        "[HAPTIC] release emitted.",
     ]
 
 

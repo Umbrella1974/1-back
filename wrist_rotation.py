@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 QUATERNION_ORDERS = {"wxyz", "xyzw"}
 WRIST_CLASSES = {"neutral", "left", "right", "unknown"}
+WRIST_UP_DOWN_CLASSES = {"neutral", "up", "down", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,9 @@ class WristRotationConfig:
     neutral_label: str = "neutral"
     left_label: str = "left"
     right_label: str = "right"
+    up_label: str = "up"
+    down_label: str = "down"
+    enable_up_down: bool = False
     classification_margin: float = 0.15
     save_timeseries: bool = True
     required: bool = False
@@ -47,6 +51,8 @@ class WristRotationConfig:
         if not math.isfinite(margin) or margin < 0.0:
             raise ValueError("wrist_rotation.classification_margin must be non-negative.")
         object.__setattr__(self, "classification_margin", margin)
+        if not isinstance(self.enable_up_down, bool):
+            raise ValueError("wrist_rotation.enable_up_down must be true or false.")
         if not isinstance(self.save_timeseries, bool):
             raise ValueError("wrist_rotation.save_timeseries must be true or false.")
         if not isinstance(self.required, bool):
@@ -60,14 +66,24 @@ class WristRotationCalibrationResult:
     neutral_mean_q: tuple[float, float, float, float] | None = None
     left_mean_q: tuple[float, float, float, float] | None = None
     right_mean_q: tuple[float, float, float, float] | None = None
+    up_mean_q: tuple[float, float, float, float] | None = None
+    down_mean_q: tuple[float, float, float, float] | None = None
     left_relative_q: tuple[float, float, float, float] | None = None
     right_relative_q: tuple[float, float, float, float] | None = None
+    up_relative_q: tuple[float, float, float, float] | None = None
+    down_relative_q: tuple[float, float, float, float] | None = None
     rotation_axis_vector: tuple[float, float, float] | None = None
+    up_down_axis_vector: tuple[float, float, float] | None = None
     left_score_mean: float | None = None
     right_score_mean: float | None = None
+    up_score_mean: float | None = None
+    down_score_mean: float | None = None
     threshold: float | None = None
+    up_down_threshold: float | None = None
     calibration_passed: bool = False
+    up_down_calibration_passed: bool = False
     failure_reason: str = ""
+    up_down_failure_reason: str = ""
     valid_frame_counts: dict[str, int] = field(default_factory=dict)
     classification_margin: float = 0.15
 
@@ -91,6 +107,11 @@ class WristRotationSample:
     wrist_rotation_class: str = "unknown"
     distance_to_left: float | None = None
     distance_to_right: float | None = None
+    wrist_up_down_valid: bool = False
+    wrist_up_down_score: float | None = None
+    wrist_up_down_class: str = "unknown"
+    distance_to_up: float | None = None
+    distance_to_down: float | None = None
     note: str = ""
 
     def to_csv_row(self) -> dict[str, Any]:
@@ -111,6 +132,9 @@ def wrist_rotation_config_from_dict(payload: dict[str, Any] | None) -> WristRota
         neutral_label=str(value.get("neutral_label", "neutral")),
         left_label=str(value.get("left_label", "left")),
         right_label=str(value.get("right_label", "right")),
+        up_label=str(value.get("up_label", "up")),
+        down_label=str(value.get("down_label", "down")),
+        enable_up_down=bool(value.get("enable_up_down", False)),
         classification_margin=value.get("classification_margin", 0.15),
         save_timeseries=bool(value.get("save_timeseries", True)),
         required=bool(value.get("required", False)),
@@ -210,23 +234,34 @@ def calibrate_wrist_rotation(
     left_quaternions: Iterable[Iterable[float]],
     right_quaternions: Iterable[Iterable[float]],
     *,
+    up_quaternions: Iterable[Iterable[float]] | None = None,
+    down_quaternions: Iterable[Iterable[float]] | None = None,
     config: WristRotationConfig | None = None,
 ) -> WristRotationCalibrationResult:
     cfg = config or WristRotationConfig()
     neutral_values = [normalize_quaternion(q) for q in neutral_quaternions]
     left_values = [normalize_quaternion(q) for q in left_quaternions]
     right_values = [normalize_quaternion(q) for q in right_quaternions]
+    up_values = [normalize_quaternion(q) for q in (up_quaternions or ())]
+    down_values = [normalize_quaternion(q) for q in (down_quaternions or ())]
     counts = {
         cfg.neutral_label: len(neutral_values),
         cfg.left_label: len(left_values),
         cfg.right_label: len(right_values),
     }
+    if cfg.enable_up_down:
+        counts[cfg.up_label] = len(up_values)
+        counts[cfg.down_label] = len(down_values)
     if any(count < cfg.min_valid_frames for count in counts.values()):
         return WristRotationCalibrationResult(
             node_id=cfg.node_id,
             quaternion_order=cfg.quaternion_order,
             calibration_passed=False,
+            up_down_calibration_passed=False,
             failure_reason="not_enough_valid_wrist_rotation_frames",
+            up_down_failure_reason=(
+                "not_enough_valid_wrist_rotation_frames" if cfg.enable_up_down else ""
+            ),
             valid_frame_counts=counts,
             classification_margin=cfg.classification_margin,
         )
@@ -259,6 +294,14 @@ def calibrate_wrist_rotation(
 
     left_score = _score(left_mean, neutral_mean, axis)
     right_score = _score(right_mean, neutral_mean, axis)
+    up_down_fields: dict[str, Any] = {}
+    if cfg.enable_up_down:
+        up_down_fields = _calibrate_up_down_fields(
+            neutral_mean,
+            up_values,
+            down_values,
+            config=cfg,
+        )
     return WristRotationCalibrationResult(
         node_id=cfg.node_id,
         quaternion_order=cfg.quaternion_order,
@@ -274,7 +317,50 @@ def calibrate_wrist_rotation(
         calibration_passed=True,
         valid_frame_counts=counts,
         classification_margin=cfg.classification_margin,
+        **up_down_fields,
     )
+
+
+def _calibrate_up_down_fields(
+    neutral_mean: tuple[float, float, float, float],
+    up_values: list[tuple[float, float, float, float]],
+    down_values: list[tuple[float, float, float, float]],
+    *,
+    config: WristRotationConfig,
+) -> dict[str, Any]:
+    up_mean = mean_quaternion(up_values, reference=neutral_mean)
+    down_mean = mean_quaternion(down_values, reference=neutral_mean)
+    up_relative = relative_quaternion(up_mean, neutral_mean)
+    down_relative = relative_quaternion(down_mean, neutral_mean)
+    axis_raw = _vector_sub(
+        quaternion_to_vector_part(up_relative),
+        quaternion_to_vector_part(down_relative),
+    )
+    try:
+        axis = _normalize_vector(axis_raw)
+    except ValueError:
+        return {
+            "up_mean_q": up_mean,
+            "down_mean_q": down_mean,
+            "up_relative_q": up_relative,
+            "down_relative_q": down_relative,
+            "up_down_calibration_passed": False,
+            "up_down_failure_reason": "up_down_wrist_rotation_too_similar",
+        }
+    up_score = _score(up_mean, neutral_mean, axis)
+    down_score = _score(down_mean, neutral_mean, axis)
+    return {
+        "up_mean_q": up_mean,
+        "down_mean_q": down_mean,
+        "up_relative_q": up_relative,
+        "down_relative_q": down_relative,
+        "up_down_axis_vector": axis,
+        "up_score_mean": up_score,
+        "down_score_mean": down_score,
+        "up_down_threshold": (up_score + down_score) / 2.0,
+        "up_down_calibration_passed": True,
+        "up_down_failure_reason": "",
+    }
 
 
 def classify_wrist_rotation(
@@ -357,11 +443,38 @@ def classify_wrist_rotation(
         calibration_result,
         score,
         label,
+        up_down_result=_classify_up_down(q, calibration_result),
         monotonic_ms=monotonic_ms,
         wall_time_iso=wall_time_iso,
         source_frame_id=source_frame_id,
         session_id=session_id,
     )
+
+
+def _classify_up_down(
+    q: tuple[float, float, float, float],
+    calibration_result: WristRotationCalibrationResult,
+) -> tuple[float | None, str]:
+    if not calibration_result.up_down_calibration_passed:
+        return None, "unknown"
+    if (
+        calibration_result.neutral_mean_q is None
+        or calibration_result.up_down_axis_vector is None
+        or calibration_result.up_score_mean is None
+        or calibration_result.down_score_mean is None
+        or calibration_result.up_down_threshold is None
+    ):
+        return None, "unknown"
+    score = _score(q, calibration_result.neutral_mean_q, calibration_result.up_down_axis_vector)
+    up_score = calibration_result.up_score_mean
+    down_score = calibration_result.down_score_mean
+    threshold = calibration_result.up_down_threshold
+    margin = abs(up_score - down_score) * calibration_result.classification_margin
+    if abs(score - threshold) <= margin:
+        return score, "neutral"
+    if abs(score - up_score) < abs(score - down_score):
+        return score, "up"
+    return score, "down"
 
 
 def classify_wrist_rotation_frame(
@@ -443,6 +556,7 @@ def _sample_from_score(
     score: float | None,
     label: str,
     *,
+    up_down_result: tuple[float | None, str] | None = None,
     monotonic_ms: float | None,
     wall_time_iso: str,
     source_frame_id: int | None,
@@ -451,6 +565,9 @@ def _sample_from_score(
 ) -> WristRotationSample:
     left = calibration_result.left_score_mean
     right = calibration_result.right_score_mean
+    up_down_score, up_down_label = up_down_result or (None, "unknown")
+    up = calibration_result.up_score_mean
+    down = calibration_result.down_score_mean
     return WristRotationSample(
         session_id=session_id,
         wall_time_iso=wall_time_iso,
@@ -466,6 +583,22 @@ def _sample_from_score(
         wrist_rotation_class=label,
         distance_to_left=abs(score - left) if score is not None and left is not None else None,
         distance_to_right=abs(score - right) if score is not None and right is not None else None,
+        wrist_up_down_valid=(
+            up_down_score is not None
+            and up_down_label in WRIST_UP_DOWN_CLASSES - {"unknown"}
+        ),
+        wrist_up_down_score=up_down_score,
+        wrist_up_down_class=up_down_label,
+        distance_to_up=(
+            abs(up_down_score - up)
+            if up_down_score is not None and up is not None
+            else None
+        ),
+        distance_to_down=(
+            abs(up_down_score - down)
+            if up_down_score is not None and down is not None
+            else None
+        ),
         note=note,
     )
 

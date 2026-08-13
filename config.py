@@ -1,9 +1,9 @@
 # 1-Back 任务配置文件
 
 # 实验参数
-NUM_TRIALS = 50              # 总试次数
+NUM_TRIALS = 51              # 总试次数
 TARGET_RATIO = 0.3           # 目标试次比例（当前数字与前一个相同）
-BREAK_INTERVAL = 20          # 每N个试次后休息
+BREAK_INTERVAL = 100          # 每N个试次后休息
 
 # 刺激参数
 STIMULUS_DURATION = 500      # 数字显示时长（毫秒）

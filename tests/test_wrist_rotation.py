@@ -78,6 +78,39 @@ def test_calibration_classifies_left_right_and_neutral() -> None:
     assert left_sample.wrist_rotation_class == "left"
     assert right_sample.wrist_rotation_class == "right"
     assert neutral_sample.wrist_rotation_class == "neutral"
+    assert neutral_sample.wrist_up_down_class == "unknown"
+
+
+def test_calibration_classifies_up_down_when_enabled() -> None:
+    config = WristRotationConfig(
+        min_valid_frames=2,
+        classification_margin=0.15,
+        enable_up_down=True,
+    )
+    neutral = [(1.0, 0.0, 0.0, 0.0), (-1.0, 0.0, 0.0, 0.0)]
+    left = [_axis_angle_z(25.0), _axis_angle_z(30.0)]
+    right = [_axis_angle_z(-25.0), _axis_angle_z(-30.0)]
+    up = [_axis_angle_x(25.0), _axis_angle_x(30.0)]
+    down = [_axis_angle_x(-25.0), _axis_angle_x(-30.0)]
+
+    calibration = calibrate_wrist_rotation(
+        neutral,
+        left,
+        right,
+        up_quaternions=up,
+        down_quaternions=down,
+        config=config,
+    )
+    up_sample = classify_wrist_rotation(_axis_angle_x(35.0), calibration)
+    down_sample = classify_wrist_rotation(_axis_angle_x(-35.0), calibration)
+    neutral_sample = classify_wrist_rotation((1.0, 0.0, 0.0, 0.0), calibration)
+
+    assert calibration.calibration_passed is True
+    assert calibration.up_down_calibration_passed is True
+    assert calibration.up_score_mean > calibration.down_score_mean
+    assert up_sample.wrist_up_down_class == "up"
+    assert down_sample.wrist_up_down_class == "down"
+    assert neutral_sample.wrist_up_down_class == "neutral"
 
 
 def test_calibration_fails_when_not_enough_frames() -> None:
@@ -122,6 +155,7 @@ def test_missing_node0_rotation_writes_invalid_sample_without_crashing(tmp_path)
     assert rows[0]["source_frame_id"] == "9"
     assert rows[0]["distance_to_left"] == ""
     assert rows[0]["distance_to_right"] == ""
+    assert rows[0]["wrist_up_down_class"] == "unknown"
 
 
 def test_wrist_logger_writes_calibration_json(tmp_path) -> None:
@@ -139,10 +173,13 @@ def test_wrist_logger_writes_calibration_json(tmp_path) -> None:
 
 
 def test_wrist_rotation_config_parses_required_flag() -> None:
-    config = wrist_rotation_config_from_dict({"enabled": True, "required": True})
+    config = wrist_rotation_config_from_dict(
+        {"enabled": True, "required": True, "enable_up_down": True}
+    )
 
     assert config.enabled is True
     assert config.required is True
+    assert config.enable_up_down is True
 
 
 def test_wrist_logger_counts_valid_and_invalid_samples(tmp_path) -> None:
@@ -169,4 +206,14 @@ def _axis_angle_z(degrees: float):
         0.0,
         0.0,
         math.sin(radians / 2.0),
+    )
+
+
+def _axis_angle_x(degrees: float):
+    radians = math.radians(degrees)
+    return (
+        math.cos(radians / 2.0),
+        math.sin(radians / 2.0),
+        0.0,
+        0.0,
     )

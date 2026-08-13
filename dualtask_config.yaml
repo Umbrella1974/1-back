@@ -3,13 +3,17 @@ session:
   output_root: outputs
   participant_id: ""
   condition_id: ""
-  duration_s: 60
+  duration_s: 140
   haptic_plan_config: haptic_plan_config_example.yaml
   end_policy: stop_on_haptic_release
   allow_multiple_haptic_trials: false
   finish_active_haptic_before_exit: true
   post_release_recording_ms: 3000
   post_release_continue_nback: true
+  release_nback_trial_window: [40, 50]
+  prerelease_haptic_complete_by_trial: 45
+  hold_release_until_nback_trial: true
+  finish_nback_after_haptic_release: true
 
 manus:
   tcp_host: 127.0.0.1
@@ -31,6 +35,9 @@ wrist_rotation:
   neutral_label: neutral
   left_label: left
   right_label: right
+  up_label: up
+  down_label: down
+  enable_up_down: true
   classification_margin: 0.15
   save_timeseries: true
   required: false

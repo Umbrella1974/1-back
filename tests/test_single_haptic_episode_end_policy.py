@@ -101,6 +101,115 @@ def test_post_release_continue_nback_flag_controls_nback_after_release(tmp_path)
     assert continued_result.total_nback_trials > stopped_result.total_nback_trials
 
 
+def test_release_is_held_until_configured_nback_trial_and_nback_completes(tmp_path) -> None:
+    session_id = "release-held-until-trial-window"
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    timeline = NBackTimeline(
+        NBackConfig(
+            num_trials=50,
+            fixation_duration_ms=0,
+            stimulus_duration_ms=20,
+            isi_min_ms=20,
+            isi_max_ms=20,
+        ),
+        sequence=[index % 10 for index in range(50)],
+        isi_ms=[20] * 50,
+        wall_time_fn=lambda: 0.0,
+    )
+
+    result = run_pinch_haptic_1back_core(
+        [
+            _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
+            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.08),
+            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
+            _sample(session_id, frame_index=4, monotonic_ms=3000.0, distance=0.02),
+        ],
+        calibration=_calibration(),
+        plan=_plan(),
+        logger=logger,
+        nback_timeline=timeline,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        session_end_policy=SessionEndPolicy(
+            allow_multiple_haptic_trials=False,
+            finish_active_haptic_before_exit=True,
+            post_release_recording_ms=30,
+            post_release_continue_nback=True,
+            release_nback_trial_window=(40, 50),
+            prerelease_haptic_complete_by_trial=45,
+            hold_release_until_nback_trial=True,
+            finish_nback_after_haptic_release=True,
+        ),
+        start_monotonic_ms=1000.0,
+        end_monotonic_ms=1100.0,
+        tick_interval_ms=10.0,
+    )
+
+    with logger.paths.haptic_events_csv.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert result.end_reason == "nback_complete_after_haptic_release"
+    assert result.total_nback_trials == 50
+    assert result.release_was_held is True
+    assert result.release_emit_trial_number == 40
+    assert result.haptic_policy_warnings == ()
+    assert [row["event_name"] for row in rows] == ["contact", "release"]
+    assert float(rows[1]["monotonic_ms"]) == timeline.trials[39].fixation_onset_monotonic_ms
+    assert "release_held_until_nback_trial" in rows[1]["timing_note"]
+
+
+def test_prerelease_deadline_warning_when_plan_is_too_slow(tmp_path) -> None:
+    session_id = "prerelease-deadline-warning"
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    timeline = NBackTimeline(
+        NBackConfig(
+            num_trials=50,
+            fixation_duration_ms=0,
+            stimulus_duration_ms=20,
+            isi_min_ms=20,
+            isi_max_ms=20,
+        ),
+        sequence=[index % 10 for index in range(50)],
+        isi_ms=[20] * 50,
+        wall_time_fn=lambda: 0.0,
+    )
+
+    result = run_pinch_haptic_1back_core(
+        [
+            _sample(session_id, frame_index=1, monotonic_ms=1000.0, distance=0.08),
+            _sample(session_id, frame_index=2, monotonic_ms=1001.0, distance=0.08),
+            _sample(session_id, frame_index=3, monotonic_ms=1002.0, distance=0.02),
+            _sample(session_id, frame_index=4, monotonic_ms=4000.0, distance=0.02),
+        ],
+        calibration=_calibration(),
+        plan=_slow_prerelease_plan(),
+        logger=logger,
+        nback_timeline=timeline,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=False),
+        session_end_policy=SessionEndPolicy(
+            allow_multiple_haptic_trials=False,
+            finish_active_haptic_before_exit=True,
+            post_release_recording_ms=30,
+            post_release_continue_nback=True,
+            release_nback_trial_window=(40, 50),
+            prerelease_haptic_complete_by_trial=45,
+            hold_release_until_nback_trial=True,
+            finish_nback_after_haptic_release=True,
+        ),
+        start_monotonic_ms=1000.0,
+        end_monotonic_ms=1100.0,
+        tick_interval_ms=10.0,
+    )
+
+    assert result.end_reason == "nback_complete_after_haptic_release"
+    assert result.release_emit_trial_number is not None
+    assert 45 <= result.release_emit_trial_number <= 50
+    assert result.haptic_policy_warnings == (
+        "prerelease_haptic_not_complete_by_trial_45",
+    )
+
+
 def _run_post_release_case(
     tmp_path,
     *,
@@ -177,6 +286,50 @@ def _plan():
                     "command_label": "contact_exit",
                     "duration_ms": 1,
                     "trigger_zone": "closed_zone",
+                },
+            ],
+            "zones": {
+                "open_zone": {"lower": "auto_a", "upper": "auto_max"},
+                "closed_zone": {"lower": "auto_min", "upper": "auto_a"},
+            },
+        }
+    )
+
+
+def _slow_prerelease_plan():
+    return haptic_plan_config_from_dict(
+        {
+            "plan_id": "slow_prerelease",
+            "description": "",
+            "random_seed": 1,
+            "timing": {
+                "contact_onset_delay_ms": [0, 0],
+                "inter_event_gap_ms": [0, 0],
+                "refractory_ms": 0,
+            },
+            "events": [
+                {
+                    "name": "contact",
+                    "modality": "vibration",
+                    "command_label": "contact_enter",
+                    "duration_ms": 1,
+                    "trigger_zone": "open_zone",
+                },
+                {
+                    "name": "slip",
+                    "modality": "vibration",
+                    "command_label": "slip_start",
+                    "duration_ms": 1,
+                    "trigger_zone": "closed_zone",
+                    "onset_gap_after_previous_ms": [1770, 1770],
+                },
+                {
+                    "name": "release",
+                    "modality": "vibration",
+                    "command_label": "contact_exit",
+                    "duration_ms": 1,
+                    "trigger_zone": "closed_zone",
+                    "onset_gap_after_previous_ms": [100, 100],
                 },
             ],
             "zones": {
