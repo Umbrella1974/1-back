@@ -19,9 +19,9 @@ events:
     modality: matrix
     matrix_sequence:
       - offset_ms: 0
-        channel_list: [82, 89]
-      - offset_ms: 50
-        channel_list: [83, 87]
+        channel_list: [82, 84, 87]
+      - offset_ms: 100
+        channel_list: [83, 86, 89]
     duration_ms: 3000
     trigger_zone: closed_zone
     nback_trial_window: [6,13]
@@ -59,9 +59,9 @@ events:
     modality: matrix
     matrix_sequence:
       - offset_ms: 0
-        channel_list: [82, 89]
-      - offset_ms: 50
-        channel_list: [83, 87]
+        channel_list: [82, 84, 87]
+      - offset_ms: 100
+        channel_list: [83, 86, 89]
     duration_ms: 3000
     trigger_zone: closed_zone
     nback_trial_window: [34,41]
