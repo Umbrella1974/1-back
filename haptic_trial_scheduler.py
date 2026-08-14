@@ -103,6 +103,8 @@ class ScheduledHapticEvent:
     actual_emit_ms: float | None = None
     planned_emit_trial_number: int | None = None
     emit_trial_number: int | None = None
+    trial_gate_enabled: bool = True
+    trial_gate_ignored: bool = False
     trial_gate_window: tuple[int, int] | None = None
     trial_gate_open_trial: int | None = None
     held_by_trial_gate: bool = False

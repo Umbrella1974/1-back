@@ -33,6 +33,7 @@ python run_pinch_haptic_1back.py --config dualtask_config.yaml
 
 ```yaml
 session:
+  task_type: dual
   session_seed: null
   duration_s: 140
   haptic_plan_config: haptic_plan_config_example.yaml
@@ -49,6 +50,7 @@ session:
 
 当前行为：
 
+- `task_type: dual` 表示触觉任务 + 1-back；`task_type: single` 表示只运行同一套触觉任务，不启动 1-back。
 - release 前的 haptic event 按 `haptic_plan_config_example.yaml` 顺序和时间正常尽早发出。
 - 如果 release 在第 40 试次前已经轮到发出，runner 会先 hold 住 release。
 - 进入第 40 试次后，pending release 会真正发出。
@@ -64,6 +66,31 @@ session:
 - 程序会从 master seed 派生独立的 `haptic_seed` 和 `nback_seed`，避免 haptic gap 抽样和 1-back 序列共用同一个随机流。
 - `summary.json` 会同时记录 `session_seed`、`haptic_seed`、`nback_seed`、`haptic_plan_template_random_seed` 和实际使用的 `haptic_plan_random_seed`。
 - haptic plan YAML 里的 `random_seed` 现在作为模板 seed 保留用于审计；正式运行时会被 session-level 派生出的 `haptic_seed` 覆盖。
+
+### Tactile-only / single-task
+
+只做触觉任务时，在同一个 config 里设置：
+
+```yaml
+session:
+  task_type: single
+```
+
+然后仍然使用同一个入口：
+
+```powershell
+python run_pinch_haptic_1back.py --config only-matrix.yaml
+```
+
+`single` 模式会保留 MANUS、pinch/wrist calibration、haptic plan、haptic TCP、neutral gate 和所有触觉日志，但不会启动 1-back pygame 窗口，也不会记录 1-back response。`nback_events.csv` 仍会写 header-only 空文件，方便后续批量分析。
+
+`single` 模式下会显式关闭：
+
+- n-back trial window gate
+- digit onset guard
+- post-release 继续/补齐 n-back
+
+如果 haptic plan 或 session 里仍写了 `nback_trial_window` / `release_nback_trial_window`，不会报错；运行时按设计忽略，并在 `haptic_events.csv` 写 `trial_gate_enabled=False`。实际触觉 timing 仍由同一套 haptic gap、duration、refractory 和 neutral gate 决定。pilot 后需要比较 single vs dual 的实际 inter-event interval、contact-to-release 时长和 P1-P5 相对位置。
 
 `duration_s` 需要足够长。当前 1-back 单试次约为：
 
@@ -227,6 +254,8 @@ wrist_rotation:
 - `actual_emit_ms` / `monotonic_ms`：gate 后真正发出的时刻。
 - `planned_emit_trial_number`：`time_ready_ms` 所在的 1-back 试次。
 - `emit_trial_number`：真正发出时所在的 1-back 试次。
+- `trial_gate_enabled`：本次运行是否启用 n-back trial gate；`single` 模式为 `False`。
+- `trial_gate_ignored`：event 本来配置了 trial window，但因为 `task_type=single` 被按设计忽略。
 - `trial_gate_window` / `trial_gate_open_trial`：本 event 使用的试次 gate。
 - `held_by_trial_gate`：是否因为试次窗口过早而等待。
 - `late_window_warning`：是否晚于窗口上界才发出。
@@ -296,6 +325,8 @@ python analyze_cue_response_metrics.py outputs\你的session根目录 --output-d
 - `cue_response_summary.json`
 
 当前 detector 版本是 `pilot_v0.3`，只用于 pilot 诊断。正式实验前需要冻结 detector 版本和 `clean / recoverable / contaminated` 规则，不要在正式数据出来后按结果重新调阈值。
+
+`cue_response_metrics.csv` 和 `cue_response_diagnostics.csv` 会保留 `task_type` 与 `nback_enabled`，后续分析应使用这两个字段区分 `single` / `dual`，不要只凭 `nback_events.csv` 是否存在判断。
 
 当前 S-R mapping：
 

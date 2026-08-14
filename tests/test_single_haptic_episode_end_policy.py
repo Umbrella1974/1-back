@@ -73,6 +73,60 @@ def test_release_starts_post_recording_and_blocks_second_contact(tmp_path) -> No
     assert rows[-1]["haptic_episode_completed"] == "True"
 
 
+def test_single_task_runs_tactile_plan_without_nback_or_trial_gate(tmp_path) -> None:
+    session_id = "tactile-only-session"
+    logger = DualTaskLogger(session_id=session_id, output_root=tmp_path)
+    result = run_pinch_haptic_1back_core(
+        [
+            *[
+                _sample(
+                    session_id,
+                    frame_index=index,
+                    monotonic_ms=index,
+                    distance=0.10 if index < 5 else 0.02,
+                )
+                for index in range(50)
+            ],
+        ],
+        calibration=_calibration(),
+        plan=_plan_with_cue({"nback_trial_window": [5, 6]}),
+        logger=logger,
+        sender=SimpleHapticSender(session_id=session_id),
+        scheduler_config=HapticTrialSchedulerConfig(avoid_haptic_on_digit_onset=True),
+        session_end_policy=SessionEndPolicy(
+            post_release_recording_ms=3,
+            post_release_continue_nback=True,
+            release_nback_trial_window=(40, 50),
+            hold_release_until_nback_trial=True,
+            finish_nback_after_haptic_release=True,
+        ),
+        task_type="single",
+        start_monotonic_ms=0,
+        end_monotonic_ms=20,
+    )
+
+    with logger.paths.haptic_events_csv.open(newline="", encoding="utf-8") as handle:
+        haptic_rows = list(csv.DictReader(handle))
+    with logger.paths.nback_events_csv.open(newline="", encoding="utf-8") as handle:
+        nback_rows = list(csv.DictReader(handle))
+
+    assert result.task_type == "single"
+    assert result.nback_enabled is False
+    assert result.trial_gate_enabled is False
+    assert result.digit_guard_enabled is False
+    assert result.total_nback_trials == 0
+    assert result.total_nback_responses == 0
+    assert result.end_reason == "haptic_release_post_recording_complete"
+    assert [row["event_name"] for row in haptic_rows] == ["contact", "cue", "release"]
+    assert all(row["trial_gate_enabled"] == "False" for row in haptic_rows)
+    assert haptic_rows[1]["trial_gate_ignored"] == "True"
+    assert haptic_rows[1]["trial_gate_window"] == "[]"
+    assert haptic_rows[1]["held_by_trial_gate"] == "False"
+    assert haptic_rows[2]["trial_gate_ignored"] == "True"
+    assert haptic_rows[2]["emit_trial_number"] == ""
+    assert nback_rows == []
+
+
 def test_post_release_complete_counts_as_release_end_reason() -> None:
     assert _is_release_end_reason("haptic_release") is True
     assert _is_release_end_reason("haptic_release_post_recording_complete") is True

@@ -74,6 +74,8 @@ HAPTIC_EVENT_FIELDS = [
     "actual_emit_ms",
     "planned_emit_trial_number",
     "emit_trial_number",
+    "trial_gate_enabled",
+    "trial_gate_ignored",
     "trial_gate_window",
     "trial_gate_open_trial",
     "held_by_trial_gate",
@@ -211,6 +213,8 @@ class HapticEventRecord:
     actual_emit_ms: float | None = None
     planned_emit_trial_number: int | None = None
     emit_trial_number: int | None = None
+    trial_gate_enabled: bool = True
+    trial_gate_ignored: bool = False
     trial_gate_window: list[int] = field(default_factory=list)
     trial_gate_open_trial: int | None = None
     held_by_trial_gate: bool = False
@@ -331,6 +335,8 @@ class SimpleHapticSender:
             actual_emit_ms=getattr(scheduled, "actual_emit_ms", None),
             planned_emit_trial_number=getattr(scheduled, "planned_emit_trial_number", None),
             emit_trial_number=getattr(scheduled, "emit_trial_number", None),
+            trial_gate_enabled=getattr(scheduled, "trial_gate_enabled", True),
+            trial_gate_ignored=getattr(scheduled, "trial_gate_ignored", False),
             trial_gate_window=getattr(scheduled, "trial_gate_window", None),
             trial_gate_open_trial=getattr(scheduled, "trial_gate_open_trial", None),
             held_by_trial_gate=getattr(scheduled, "held_by_trial_gate", False),
@@ -595,6 +601,8 @@ class SimpleHapticSender:
         actual_emit_ms: float | None = None,
         planned_emit_trial_number: int | None = None,
         emit_trial_number: int | None = None,
+        trial_gate_enabled: bool = True,
+        trial_gate_ignored: bool = False,
         trial_gate_window: list[int] | tuple[int, ...] | None = None,
         trial_gate_open_trial: int | None = None,
         held_by_trial_gate: bool = False,
@@ -719,6 +727,8 @@ class SimpleHapticSender:
                 else None
             ),
             emit_trial_number=int(emit_trial_number) if emit_trial_number is not None else None,
+            trial_gate_enabled=bool(trial_gate_enabled),
+            trial_gate_ignored=bool(trial_gate_ignored),
             trial_gate_window=[
                 int(item) for item in (trial_gate_window or ())
             ],

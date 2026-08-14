@@ -59,6 +59,9 @@ from wrist_rotation import (
 
 
 DEFAULT_TICK_INTERVAL_MS = 10.0
+TASK_TYPE_DUAL = "dual"
+TASK_TYPE_SINGLE = "single"
+TASK_TYPES = {TASK_TYPE_DUAL, TASK_TYPE_SINGLE, "tactile_only"}
 CALIBRATION_FAILURE_MESSAGE = (
     "Calibration failed: max-min too small.\n"
     "Check target_finger_node_id, hand gesture, and whether you are opening/pinching the configured fingers."
@@ -179,6 +182,7 @@ class ReleaseGateState:
     pending_planned_emit_trial_number: int | None = None
     pending_trial_gate_window: tuple[int, int] | None = None
     pending_trial_gate_open_trial: int | None = None
+    pending_trial_gate_ignored: bool = False
     pending_late_window_warning: str = ""
     pending_wrist_neutral_gate_required: bool = False
     pending_wrist_neutral_gate_passed: bool | None = None
@@ -227,6 +231,10 @@ class PinchHaptic1BackCoreResult:
     release_was_held: bool = False
     release_emit_trial_number: int | None = None
     haptic_policy_warnings: tuple[str, ...] = ()
+    task_type: str = TASK_TYPE_DUAL
+    nback_enabled: bool = True
+    trial_gate_enabled: bool = True
+    digit_guard_enabled: bool = True
 
 
 def run_pinch_haptic_1back_core(
@@ -235,7 +243,7 @@ def run_pinch_haptic_1back_core(
     calibration: PinchCalibrationResult,
     plan: HapticPlanConfig,
     logger: DualTaskLogger,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None = None,
     sender: SimpleHapticSender | None = None,
     scheduler_config: HapticTrialSchedulerConfig | None = None,
     nback_responses: Iterable[NBackResponseInput | Any] | None = None,
@@ -244,39 +252,52 @@ def run_pinch_haptic_1back_core(
     tick_interval_ms: float = DEFAULT_TICK_INTERVAL_MS,
     session_end_policy: SessionEndPolicy | None = None,
     haptic_feedback_display: HapticFeedbackDisplayConfig | None = None,
+    task_type: str = TASK_TYPE_DUAL,
     print_fn: Any = print,
 ) -> PinchHaptic1BackCoreResult:
     """Run a deterministic dual-task loop without Pygame, TCP, or ESP32."""
 
+    task = _normalize_task_type(task_type)
+    nback_enabled = task == TASK_TYPE_DUAL
+    trial_gate_enabled = nback_enabled
+    digit_guard_enabled = nback_enabled
+    if nback_enabled and nback_timeline is None:
+        raise ValueError("nback_timeline is required when task_type=dual.")
     tick_interval = _positive_float(tick_interval_ms, "tick_interval_ms")
     sample_list = sorted(samples, key=lambda item: float(getattr(item, "monotonic_ms")))
     response_list = sorted(
-        list(nback_responses or ()),
+        list(nback_responses or ()) if nback_enabled else [],
         key=lambda item: _response_time_ms(item),
     )
-    if not nback_timeline.started:
+    if nback_enabled and nback_timeline is not None and not nback_timeline.started:
         if start_monotonic_ms is None:
             start_monotonic_ms = _infer_start_ms(sample_list, response_list)
         nback_timeline.start(float(start_monotonic_ms))
 
-    timeline_end = nback_timeline.end_monotonic_ms
-    if timeline_end is None:
-        raise ValueError("nback_timeline must contain at least one trial.")
     if start_monotonic_ms is None:
-        first_trial = nback_timeline.trials[0]
-        start_monotonic_ms = first_trial.fixation_onset_monotonic_ms
+        if nback_enabled and nback_timeline is not None:
+            first_trial = nback_timeline.trials[0]
+            start_monotonic_ms = first_trial.fixation_onset_monotonic_ms
+        else:
+            start_monotonic_ms = _infer_start_ms(sample_list, response_list)
+    timeline_end = nback_timeline.end_monotonic_ms if nback_enabled and nback_timeline is not None else None
+    if nback_enabled and timeline_end is None:
+        raise ValueError("nback_timeline must contain at least one trial.")
     if end_monotonic_ms is None:
         end_monotonic_ms = max(
-            timeline_end,
+            timeline_end if timeline_end is not None else float(start_monotonic_ms),
             _last_time_ms(sample_list, default=float(start_monotonic_ms)),
             _last_response_time_ms(response_list, default=float(start_monotonic_ms)),
         )
 
     haptic_sender = sender or SimpleHapticSender(session_id=logger.session_id)
     scheduler = HapticTrialScheduler(plan, scheduler_config)
-    policy = session_end_policy or SessionEndPolicy(
-        allow_multiple_haptic_trials=True,
-        finish_active_haptic_before_exit=False,
+    policy = _session_end_policy_for_task(
+        session_end_policy or SessionEndPolicy(
+            allow_multiple_haptic_trials=True,
+            finish_active_haptic_before_exit=False,
+        ),
+        task,
     )
     feedback_config = haptic_feedback_display or HapticFeedbackDisplayConfig()
     episode_state = HapticEpisodeState()
@@ -313,7 +334,7 @@ def run_pinch_haptic_1back_core(
                 post_release_pinch_samples += 1
             sample_index += 1
 
-        nback_active = _post_release_nback_active(post_release_started_ms, policy)
+        nback_active = nback_enabled and _post_release_nback_active(post_release_started_ms, policy)
         if nback_active:
             while (
                 response_index < len(response_list)
@@ -334,7 +355,9 @@ def run_pinch_haptic_1back_core(
                     zone=latest_zone,
                     now_ms=now_ms,
                     latest_sample=latest_sample,
-                    digit_onsets_ms=nback_timeline.digit_onsets_ms,
+                    digit_onsets_ms=(
+                        nback_timeline.digit_onsets_ms if digit_guard_enabled and nback_timeline is not None else None
+                    ),
                 )
             emitted = _gate_haptic_events(
                 emitted,
@@ -342,18 +365,20 @@ def run_pinch_haptic_1back_core(
                 gate_state=release_gate_state,
                 scheduler=scheduler,
                 nback_timeline=nback_timeline,
+                trial_gate_enabled=trial_gate_enabled,
                 now_ms=now_ms,
                 latest_zone=latest_zone,
                 latest_wrist_sample=None,
             )
-            _append_prerelease_deadline_warning_if_needed(
-                policy=policy,
-                gate_state=release_gate_state,
-                scheduler=scheduler,
-                nback_timeline=nback_timeline,
-                now_ms=now_ms,
-                post_release_started_ms=post_release_started_ms,
-            )
+            if trial_gate_enabled:
+                _append_prerelease_deadline_warning_if_needed(
+                    policy=policy,
+                    gate_state=release_gate_state,
+                    scheduler=scheduler,
+                    nback_timeline=nback_timeline,
+                    now_ms=now_ms,
+                    post_release_started_ms=post_release_started_ms,
+                )
         for event in emitted:
             _record_haptic_event(
                 event,
@@ -376,6 +401,7 @@ def run_pinch_haptic_1back_core(
         if _post_release_complete(
             policy=policy,
             nback_timeline=nback_timeline,
+            nback_enabled=nback_enabled,
             now_ms=now_ms,
             post_release_end_ms=post_release_end_ms,
         ):
@@ -432,8 +458,9 @@ def run_pinch_haptic_1back_core(
         if post_release_started_ms is None or policy.post_release_continue_nback
         else post_release_started_ms
     )
-    for row in nback_timeline.finalize_until(final_nback_ms, session_id=logger.session_id):
-        logger.write_nback_event(row)
+    if nback_enabled and nback_timeline is not None:
+        for row in nback_timeline.finalize_until(final_nback_ms, session_id=logger.session_id):
+            logger.write_nback_event(row)
     haptic_sender.poll_due_control_commands(final_now_ms)
     zone_stats.finalize(final_now_ms)
     logger.write_nback_events([])
@@ -464,6 +491,10 @@ def run_pinch_haptic_1back_core(
         release_was_held=release_gate_state.release_was_held,
         release_emit_trial_number=release_gate_state.release_emit_trial_number,
         haptic_policy_warnings=tuple(release_gate_state.warnings),
+        task_type=task,
+        nback_enabled=nback_enabled,
+        trial_gate_enabled=trial_gate_enabled,
+        digit_guard_enabled=digit_guard_enabled,
         **zone_stats.to_dict(),
     )
 
@@ -480,9 +511,14 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     sync_config = _object_section(config, "sync")
     wrist_rotation_config = wrist_rotation_config_from_dict(config.get("wrist_rotation"))
     haptic_debug_config = _haptic_debug_config_from_dualtask_config(config)
-    session_end_policy = _session_end_policy_from_config(session_config)
+    configured_session_end_policy = _session_end_policy_from_config(session_config)
     feedback_config = _haptic_feedback_display_from_dualtask_config(config)
     seed_info = session_seed_info_from_config(session_config)
+    task_type = _normalize_task_type(session_config.get("task_type", TASK_TYPE_DUAL))
+    nback_enabled = task_type == TASK_TYPE_DUAL
+    trial_gate_enabled = nback_enabled
+    digit_guard_enabled = nback_enabled
+    warnings: list[str] = []
 
     session_id = make_session_id(session_config.get("session_id_prefix", "pinch_haptic_1back"))
     logger = DualTaskLogger(
@@ -494,6 +530,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     haptic_plan_template_random_seed = plan.random_seed
     plan = replace(plan, random_seed=seed_info.haptic_seed)
     plan = _plan_with_global_haptic_defaults(plan, config.get("haptic_defaults"))
+    session_end_policy = _session_end_policy_for_task(configured_session_end_policy, task_type)
+    if not trial_gate_enabled and _task_config_has_trial_gate_fields(plan, configured_session_end_policy):
+        warnings.append("trial_gate_ignored_for_single_task")
     parser = ManusOnlyPinchInput(
         ManusPinchInputConfig(
             thumb_node_id=pinch_config.get("thumb_node_id", 4),
@@ -565,18 +604,25 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     )
     sender = SimpleHapticSender(sender_config, session_id=session_id)
     scheduler_config = HapticTrialSchedulerConfig(
-        avoid_haptic_on_digit_onset=bool(sync_config.get("avoid_haptic_on_digit_onset", True)),
+        avoid_haptic_on_digit_onset=(
+            bool(sync_config.get("avoid_haptic_on_digit_onset", True))
+            if digit_guard_enabled
+            else False
+        ),
         digit_onset_guard_ms=sync_config.get("digit_onset_guard_ms", 150),
         max_haptic_delay_ms=sync_config.get("max_haptic_delay_ms", 500),
         if_cannot_avoid=str(sync_config.get("if_cannot_avoid", "log_warning_and_send")),
     )
-    nback_config = replace(
-        _nback_config_from_dualtask_config(config),
-        random_seed=seed_info.nback_seed,
+    nback_config = (
+        replace(
+            _nback_config_from_dualtask_config(config),
+            random_seed=seed_info.nback_seed,
+        )
+        if nback_enabled
+        else None
     )
-    nback_timeline = NBackTimeline(nback_config)
+    nback_timeline = NBackTimeline(nback_config) if nback_config is not None else None
 
-    warnings: list[str] = []
     errors: list[str] = []
     start_wall = _now_iso()
     total_haptic_events = 0
@@ -673,16 +719,21 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         else:
             print("[WRIST] calibration disabled")
 
-        display = _NBackPygameDisplay()
-        display.show_text_and_wait(
-            "1-Back 任务\n\n"
-            "屏幕上会依次显示数字\n"
-            "请判断当前数字是否与前一个数字相同\n\n"
-            f"相同按 [{nback_timeline.config.key_same.upper()}] 键\n"
-            f"不同按 [{nback_timeline.config.key_different.upper()}] 键\n\n"
-            "按空格键开始正式双任务",
-            wait_key_name="space",
-        )
+        if nback_enabled:
+            if nback_timeline is None:
+                raise RuntimeError("nback_timeline missing for dual task.")
+            display = _NBackPygameDisplay()
+            display.show_text_and_wait(
+                "1-Back 任务\n\n"
+                "屏幕上会依次显示数字\n"
+                "请判断当前数字是否与前一个数字相同\n\n"
+                f"相同按 [{nback_timeline.config.key_same.upper()}] 键\n"
+                f"不同按 [{nback_timeline.config.key_different.upper()}] 键\n\n"
+                "按空格键开始正式双任务",
+                wait_key_name="space",
+            )
+        else:
+            input("Tactile-only task: press Enter to start the formal tactile session...")
         formal_result = _run_live_formal_phase(
             server,
             parser,
@@ -702,6 +753,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             duration_s=float(session_config.get("duration_s", 60)),
             wrist_rotation_config=wrist_rotation_config,
             wrist_rotation_calibration=wrist_calibration,
+            task_type=task_type,
         )
         total_haptic_events = formal_result.total_haptic_events
         end_reason = formal_result.end_reason
@@ -720,6 +772,10 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "session_id": session_id,
                 "participant_id": session_config.get("participant_id", ""),
                 "condition_id": session_config.get("condition_id", ""),
+                "task_type": task_type,
+                "nback_enabled": nback_enabled,
+                "trial_gate_enabled": trial_gate_enabled,
+                "digit_guard_enabled": digit_guard_enabled,
                 "config_path": str(config_path),
                 "haptic_plan_config_path": str(plan_path),
                 "haptic_plan_id": plan.plan_id,
@@ -786,7 +842,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             warnings.append("haptic_sequence_interrupted")
         logger.close_wrist_rotation_writer()
         logger.write_summary(summary)
-    print(f"Dual-task complete. Haptic events: {total_haptic_events}")
+    print(f"{task_type} task complete. Haptic events: {total_haptic_events}")
     return logger.session_dir
 
 
@@ -919,8 +975,8 @@ def _run_live_formal_phase(
     plan: HapticPlanConfig,
     sender: SimpleHapticSender,
     scheduler_config: HapticTrialSchedulerConfig,
-    nback_timeline: NBackTimeline,
-    display: "_NBackPygameDisplay",
+    nback_timeline: NBackTimeline | None,
+    display: "_NBackPygameDisplay | None",
     session_id: str,
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None = None,
@@ -930,7 +986,16 @@ def _run_live_formal_phase(
     duration_s: float = 60.0,
     wrist_rotation_config: WristRotationConfig | None = None,
     wrist_rotation_calibration: WristRotationCalibrationResult | None = None,
+    task_type: str = TASK_TYPE_DUAL,
 ) -> PinchHaptic1BackCoreResult:
+    task = _normalize_task_type(task_type)
+    nback_enabled = task == TASK_TYPE_DUAL
+    trial_gate_enabled = nback_enabled
+    digit_guard_enabled = nback_enabled
+    if nback_enabled and nback_timeline is None:
+        raise ValueError("nback_timeline is required when task_type=dual.")
+    if nback_enabled and display is None:
+        raise ValueError("display is required when task_type=dual.")
     scheduler = HapticTrialScheduler(plan, scheduler_config)
     policy = session_end_policy or SessionEndPolicy()
     feedback_config = haptic_feedback_display or HapticFeedbackDisplayConfig()
@@ -944,7 +1009,8 @@ def _run_live_formal_phase(
     wrist_config = wrist_rotation_config or WristRotationConfig()
     start_ms = time.monotonic() * 1000.0
     duration_deadline_ms = start_ms + max(0.0, float(duration_s)) * 1000.0
-    nback_timeline.start(start_ms)
+    if nback_enabled and nback_timeline is not None:
+        nback_timeline.start(start_ms)
     end_reason = ""
     final_now_ms = start_ms
     post_release_started_ms: float | None = None
@@ -954,10 +1020,11 @@ def _run_live_formal_phase(
 
     while True:
         now_ms = time.monotonic() * 1000.0
-        nback_active = _post_release_nback_active(post_release_started_ms, policy)
-        for key_name in display.poll_keydowns():
-            if nback_active:
-                nback_timeline.record_response(key_name, now_ms)
+        nback_active = nback_enabled and _post_release_nback_active(post_release_started_ms, policy)
+        if nback_enabled and display is not None and nback_timeline is not None:
+            for key_name in display.poll_keydowns():
+                if nback_active:
+                    nback_timeline.record_response(key_name, now_ms)
 
         frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
         while frame is not None:
@@ -1002,7 +1069,11 @@ def _run_live_formal_phase(
                     zone=latest_zone,
                     now_ms=now_ms,
                     latest_sample=latest_sample,
-                    digit_onsets_ms=nback_timeline.digit_onsets_ms,
+                    digit_onsets_ms=(
+                        nback_timeline.digit_onsets_ms
+                        if digit_guard_enabled and nback_timeline is not None
+                        else None
+                    ),
                     haptic_debug_config=debug_config,
                 )
             emitted = _gate_haptic_events(
@@ -1011,18 +1082,20 @@ def _run_live_formal_phase(
                 gate_state=release_gate_state,
                 scheduler=scheduler,
                 nback_timeline=nback_timeline,
+                trial_gate_enabled=trial_gate_enabled,
                 now_ms=now_ms,
                 latest_zone=latest_zone,
                 latest_wrist_sample=latest_wrist_sample,
             )
-            _append_prerelease_deadline_warning_if_needed(
-                policy=policy,
-                gate_state=release_gate_state,
-                scheduler=scheduler,
-                nback_timeline=nback_timeline,
-                now_ms=now_ms,
-                post_release_started_ms=post_release_started_ms,
-            )
+            if trial_gate_enabled:
+                _append_prerelease_deadline_warning_if_needed(
+                    policy=policy,
+                    gate_state=release_gate_state,
+                    scheduler=scheduler,
+                    nback_timeline=nback_timeline,
+                    now_ms=now_ms,
+                    post_release_started_ms=post_release_started_ms,
+                )
         for event in emitted:
             _record_haptic_event(
                 event,
@@ -1038,7 +1111,7 @@ def _run_live_formal_phase(
                 logger.write_nback_event(row)
             tick = nback_timeline.tick(now_ms)
             display.draw(tick)
-        else:
+        elif nback_enabled and display is not None:
             display.draw(NBackTick(phase=NBACK_PHASE_COMPLETE, trial=None))
 
         if any(_event_should_end_session(event, policy) for event in emitted):
@@ -1049,6 +1122,7 @@ def _run_live_formal_phase(
         if _post_release_complete(
             policy=policy,
             nback_timeline=nback_timeline,
+            nback_enabled=nback_enabled,
             now_ms=now_ms,
             post_release_end_ms=post_release_end_ms,
         ):
@@ -1056,9 +1130,9 @@ def _run_live_formal_phase(
             final_now_ms = now_ms
             break
         if post_release_end_ms is not None:
-            display.tick(60)
+            _formal_phase_tick(display)
             continue
-        nback_complete = nback_timeline.is_complete(now_ms)
+        nback_complete = nback_enabled and nback_timeline is not None and nback_timeline.is_complete(now_ms)
         duration_elapsed = now_ms >= duration_deadline_ms
         if nback_complete or duration_elapsed:
             if (
@@ -1068,7 +1142,7 @@ def _run_live_formal_phase(
                 )
                 and policy.finish_active_haptic_before_exit
             ):
-                display.tick(60)
+                _formal_phase_tick(display)
                 continue
             end_reason = "nback_complete" if nback_complete else "duration_elapsed"
             if (
@@ -1078,15 +1152,16 @@ def _run_live_formal_phase(
                 episode_state.interrupted_haptic_trial = True
             final_now_ms = now_ms
             break
-        display.tick(60)
+        _formal_phase_tick(display)
 
     final_nback_ms = (
         final_now_ms
         if post_release_started_ms is None or policy.post_release_continue_nback
         else post_release_started_ms
     )
-    for row in nback_timeline.finalize_until(final_nback_ms, session_id=session_id):
-        logger.write_nback_event(row)
+    if nback_enabled and nback_timeline is not None:
+        for row in nback_timeline.finalize_until(final_nback_ms, session_id=session_id):
+            logger.write_nback_event(row)
     sender.poll_due_control_commands(final_now_ms)
     zone_stats.finalize(final_now_ms)
     sender.write_csv(logger.paths.haptic_events_csv)
@@ -1117,6 +1192,10 @@ def _run_live_formal_phase(
         release_was_held=release_gate_state.release_was_held,
         release_emit_trial_number=release_gate_state.release_emit_trial_number,
         haptic_policy_warnings=tuple(release_gate_state.warnings),
+        task_type=task,
+        nback_enabled=nback_enabled,
+        trial_gate_enabled=trial_gate_enabled,
+        digit_guard_enabled=digit_guard_enabled,
         **zone_stats.to_dict(),
     )
 
@@ -1166,7 +1245,7 @@ def _next_loop_time_ms(
     sample_index: int,
     response_list: list[Any],
     response_index: int,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
     scheduler: HapticTrialScheduler,
 ) -> float | None:
     if now_ms >= end_ms:
@@ -1179,9 +1258,10 @@ def _next_loop_time_ms(
     pending_onset = _pending_onset_ms(scheduler)
     if pending_onset is not None:
         candidates.append(float(pending_onset))
-    next_nback_end = _next_nback_finalize_time_ms(nback_timeline, now_ms)
-    if next_nback_end is not None:
-        candidates.append(next_nback_end)
+    if nback_timeline is not None:
+        next_nback_end = _next_nback_finalize_time_ms(nback_timeline, now_ms)
+        if next_nback_end is not None:
+            candidates.append(next_nback_end)
     future = [value for value in candidates if value > now_ms + 1e-9]
     if not future:
         return None
@@ -1338,6 +1418,34 @@ def _plan_with_global_haptic_defaults(
     )
 
 
+def _task_config_has_trial_gate_fields(
+    plan: HapticPlanConfig,
+    policy: SessionEndPolicy,
+) -> bool:
+    if (
+        policy.release_nback_trial_window is not None
+        or policy.prerelease_haptic_complete_by_trial is not None
+        or policy.hold_release_until_nback_trial
+        or policy.finish_nback_after_haptic_release
+        or policy.post_release_continue_nback
+    ):
+        return True
+    return any(getattr(event, "nback_trial_window", None) is not None for event in plan.events)
+
+
+def _session_end_policy_for_task(
+    policy: SessionEndPolicy,
+    task_type: str,
+) -> SessionEndPolicy:
+    if _normalize_task_type(task_type) == TASK_TYPE_DUAL:
+        return policy
+    return replace(
+        policy,
+        post_release_continue_nback=False,
+        finish_nback_after_haptic_release=False,
+    )
+
+
 def _calibration_summary_fields(
     calibration: PinchCalibrationResult | None,
 ) -> dict[str, Any]:
@@ -1427,6 +1535,10 @@ def _haptic_end_summary_fields(
         "release_was_held": result.release_was_held,
         "release_emit_trial_number": result.release_emit_trial_number,
         "haptic_policy_warnings": list(result.haptic_policy_warnings),
+        "task_type": result.task_type,
+        "nback_enabled": result.nback_enabled,
+        "trial_gate_enabled": result.trial_gate_enabled,
+        "digit_guard_enabled": result.digit_guard_enabled,
     }
 
 
@@ -1509,13 +1621,39 @@ def _nback_trial_number_at(
     return trial_number
 
 
+def _required_nback_trial_number_at(
+    nback_timeline: NBackTimeline | None,
+    now_ms: float,
+) -> int:
+    if nback_timeline is None:
+        raise ValueError("nback_timeline is required when trial gate is enabled.")
+    return _nback_trial_number_at(nback_timeline, now_ms)
+
+
+def _normalize_task_type(value: Any) -> str:
+    task_type = str(value if value is not None else TASK_TYPE_DUAL).strip().lower()
+    if task_type == "tactile_only":
+        return TASK_TYPE_SINGLE
+    if task_type not in {TASK_TYPE_DUAL, TASK_TYPE_SINGLE}:
+        raise ValueError("session.task_type must be dual or single.")
+    return task_type
+
+
+def _formal_phase_tick(display: Any | None) -> None:
+    if display is not None:
+        display.tick(60)
+    else:
+        time.sleep(1.0 / 60.0)
+
+
 def _gate_haptic_events(
     events: list[Any],
     *,
     policy: SessionEndPolicy,
     gate_state: ReleaseGateState,
     scheduler: HapticTrialScheduler,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
+    trial_gate_enabled: bool,
     now_ms: float,
     latest_zone: str,
     latest_wrist_sample: Any | None,
@@ -1527,6 +1665,7 @@ def _gate_haptic_events(
             gate_state=gate_state,
             scheduler=scheduler,
             nback_timeline=nback_timeline,
+            trial_gate_enabled=trial_gate_enabled,
             now_ms=now_ms,
             latest_zone=latest_zone,
             latest_wrist_sample=latest_wrist_sample,
@@ -1541,6 +1680,7 @@ def _gate_haptic_events(
             gate_state=gate_state,
             scheduler=scheduler,
             nback_timeline=nback_timeline,
+            trial_gate_enabled=trial_gate_enabled,
             now_ms=now_ms,
             latest_zone=latest_zone,
             latest_wrist_sample=latest_wrist_sample,
@@ -1557,14 +1697,21 @@ def _gate_single_haptic_event(
     policy: SessionEndPolicy,
     gate_state: ReleaseGateState,
     scheduler: HapticTrialScheduler,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
+    trial_gate_enabled: bool,
     now_ms: float,
     latest_zone: str,
     latest_wrist_sample: Any | None,
 ) -> Any | None:
     time_ready_ms = float(now_ms)
-    planned_trial = _nback_trial_number_at(nback_timeline, time_ready_ms)
-    trial_window = _event_trial_window(event, policy)
+    explicit_trial_window = _event_trial_window(event, policy)
+    trial_window = explicit_trial_window if trial_gate_enabled else None
+    trial_gate_ignored = bool(explicit_trial_window is not None and not trial_gate_enabled)
+    planned_trial = (
+        _required_nback_trial_number_at(nback_timeline, time_ready_ms)
+        if trial_gate_enabled
+        else None
+    )
     if trial_window is not None:
         lower, upper = trial_window
         if planned_trial < lower:
@@ -1587,6 +1734,7 @@ def _gate_single_haptic_event(
             time_ready_ms=time_ready_ms,
             planned_trial=planned_trial,
             trial_window=trial_window,
+            trial_gate_ignored=trial_gate_ignored,
             held_by_trial_gate=False,
             held_by_wrist_neutral_gate=True,
             wrist_neutral_gate_passed=False,
@@ -1598,12 +1746,14 @@ def _gate_single_haptic_event(
         gate_state=gate_state,
         scheduler=scheduler,
         nback_timeline=nback_timeline,
+        trial_gate_enabled=trial_gate_enabled,
         now_ms=now_ms,
         latest_zone=latest_zone,
         latest_wrist_sample=latest_wrist_sample,
         time_ready_ms=time_ready_ms,
         planned_trial=planned_trial,
         trial_window=trial_window,
+        trial_gate_ignored=trial_gate_ignored,
         held_by_trial_gate=False,
         held_by_wrist_neutral_gate=False,
         wrist_neutral_gate_passed=(
@@ -1617,7 +1767,8 @@ def _release_pending_gate_event_if_ready(
     policy: SessionEndPolicy,
     gate_state: ReleaseGateState,
     scheduler: HapticTrialScheduler,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
+    trial_gate_enabled: bool,
     now_ms: float,
     latest_zone: str,
     latest_wrist_sample: Any | None,
@@ -1625,9 +1776,15 @@ def _release_pending_gate_event_if_ready(
     event = gate_state.pending_event
     if event is None:
         return None
-    trial_number = _nback_trial_number_at(nback_timeline, now_ms)
+    trial_number = (
+        _required_nback_trial_number_at(nback_timeline, now_ms)
+        if trial_gate_enabled
+        else None
+    )
     if gate_state.pending_trial_gate_window is not None:
         lower, _ = gate_state.pending_trial_gate_window
+        if trial_number is None:
+            raise ValueError("trial gate pending without an active nback timeline.")
         if trial_number < lower:
             return None
     wrist_required = bool(gate_state.pending_wrist_neutral_gate_required)
@@ -1645,12 +1802,14 @@ def _release_pending_gate_event_if_ready(
         gate_state=gate_state,
         scheduler=scheduler,
         nback_timeline=nback_timeline,
+        trial_gate_enabled=trial_gate_enabled,
         now_ms=now_ms,
         latest_zone=latest_zone,
         latest_wrist_sample=latest_wrist_sample,
         time_ready_ms=float(gate_state.pending_event_ready_ms or now_ms),
         planned_trial=gate_state.pending_planned_emit_trial_number,
         trial_window=gate_state.pending_trial_gate_window,
+        trial_gate_ignored=gate_state.pending_trial_gate_ignored,
         held_by_trial_gate=gate_state.pending_held_by_trial_gate,
         held_by_wrist_neutral_gate=gate_state.pending_held_by_wrist_neutral_gate,
         wrist_neutral_gate_passed=(
@@ -1664,6 +1823,7 @@ def _release_pending_gate_event_if_ready(
     gate_state.pending_planned_emit_trial_number = None
     gate_state.pending_trial_gate_window = None
     gate_state.pending_trial_gate_open_trial = None
+    gate_state.pending_trial_gate_ignored = False
     gate_state.pending_late_window_warning = ""
     gate_state.pending_wrist_neutral_gate_required = False
     gate_state.pending_wrist_neutral_gate_passed = None
@@ -1675,17 +1835,21 @@ def _store_pending_gate_event(
     *,
     gate_state: ReleaseGateState,
     time_ready_ms: float,
-    planned_trial: int,
+    planned_trial: int | None,
     trial_window: tuple[int, int] | None,
+    trial_gate_ignored: bool = False,
     held_by_trial_gate: bool,
     held_by_wrist_neutral_gate: bool,
     wrist_neutral_gate_passed: bool | None = None,
 ) -> None:
     gate_state.pending_event = event
     gate_state.pending_event_ready_ms = float(time_ready_ms)
-    gate_state.pending_planned_emit_trial_number = int(planned_trial)
+    gate_state.pending_planned_emit_trial_number = (
+        int(planned_trial) if planned_trial is not None else None
+    )
     gate_state.pending_trial_gate_window = trial_window
     gate_state.pending_trial_gate_open_trial = trial_window[0] if trial_window is not None else None
+    gate_state.pending_trial_gate_ignored = bool(trial_gate_ignored)
     gate_state.pending_held_by_trial_gate = bool(held_by_trial_gate)
     gate_state.pending_held_by_wrist_neutral_gate = bool(held_by_wrist_neutral_gate)
     gate_state.pending_wrist_neutral_gate_required = _event_requires_wrist_neutral(event)
@@ -1698,20 +1862,26 @@ def _event_ready_for_emit(
     policy: SessionEndPolicy,
     gate_state: ReleaseGateState,
     scheduler: HapticTrialScheduler,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
+    trial_gate_enabled: bool,
     now_ms: float,
     latest_zone: str,
     latest_wrist_sample: Any | None,
     time_ready_ms: float,
     planned_trial: int | None,
     trial_window: tuple[int, int] | None,
+    trial_gate_ignored: bool = False,
     held_by_trial_gate: bool,
     held_by_wrist_neutral_gate: bool,
     wrist_neutral_gate_passed: bool | None,
 ) -> Any:
-    emit_trial = _nback_trial_number_at(nback_timeline, now_ms)
+    emit_trial = (
+        _required_nback_trial_number_at(nback_timeline, now_ms)
+        if trial_gate_enabled
+        else None
+    )
     late_warning = ""
-    if trial_window is not None and emit_trial > trial_window[1]:
+    if trial_window is not None and emit_trial is not None and emit_trial > trial_window[1]:
         late_warning = (
             f"{getattr(event, 'event_name', 'event')}_after_nback_trial_window_"
             f"{trial_window[0]}_{trial_window[1]}:trial_{emit_trial}"
@@ -1744,6 +1914,8 @@ def _event_ready_for_emit(
         time_ready_ms=float(time_ready_ms),
         planned_emit_trial_number=planned_trial,
         emit_trial_number=emit_trial,
+        trial_gate_enabled=trial_gate_enabled,
+        trial_gate_ignored=trial_gate_ignored,
         trial_gate_window=trial_window,
         trial_gate_open_trial=trial_window[0] if trial_window is not None else None,
         held_by_trial_gate=held_by_trial_gate,
@@ -1847,7 +2019,7 @@ def _append_prerelease_deadline_warning_if_needed(
     policy: SessionEndPolicy,
     gate_state: ReleaseGateState,
     scheduler: HapticTrialScheduler,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
     now_ms: float,
     post_release_started_ms: float | None,
 ) -> None:
@@ -1859,7 +2031,7 @@ def _append_prerelease_deadline_warning_if_needed(
         or gate_state.pending_event is not None
     ):
         return
-    if _nback_trial_number_at(nback_timeline, now_ms) < deadline:
+    if _required_nback_trial_number_at(nback_timeline, now_ms) < deadline:
         return
     if _scheduler_is_waiting_for_release(scheduler):
         return
@@ -1891,14 +2063,15 @@ def _post_release_nback_active(
 def _post_release_complete(
     *,
     policy: SessionEndPolicy,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
+    nback_enabled: bool,
     now_ms: float,
     post_release_end_ms: float | None,
 ) -> bool:
     if post_release_end_ms is None or now_ms < post_release_end_ms:
         return False
     if policy.finish_nback_after_haptic_release:
-        return nback_timeline.is_complete(now_ms)
+        return bool(nback_enabled and nback_timeline is not None and nback_timeline.is_complete(now_ms))
     return True
 
 
@@ -1952,14 +2125,14 @@ def _haptic_sequence_active(
 
 def _end_reason_at_limit(
     *,
-    nback_timeline: NBackTimeline,
+    nback_timeline: NBackTimeline | None,
     now_ms: float,
     episode_state: HapticEpisodeState,
     policy: SessionEndPolicy,
 ) -> str:
     if episode_state.active and not policy.finish_active_haptic_before_exit:
         episode_state.interrupted_haptic_trial = True
-    if nback_timeline.is_complete(now_ms):
+    if nback_timeline is not None and nback_timeline.is_complete(now_ms):
         return "nback_complete"
     return "duration_elapsed"
 

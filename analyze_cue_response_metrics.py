@@ -29,6 +29,8 @@ UNIFIED_FIELDS = [
     "session_id",
     "participant_id",
     "condition",
+    "task_type",
+    "nback_enabled",
     "plan_id",
     "event_name",
     "event_position",
@@ -125,6 +127,8 @@ UP_DIAGNOSTIC_FIELDS = [
     "session_id",
     "participant_id",
     "condition",
+    "task_type",
+    "nback_enabled",
     "plan_id",
     "event_position",
     "emit_trial_number",
@@ -1232,6 +1236,8 @@ def _base_diagnostic_row(
         "session_id": row.get("session_id", ""),
         "participant_id": row.get("participant_id", ""),
         "condition": row.get("condition", ""),
+        "task_type": row.get("task_type", ""),
+        "nback_enabled": row.get("nback_enabled", ""),
         "plan_id": row.get("plan_id", ""),
         "event_name": row.get("event_name", ""),
         "event_position": row.get("event_position", ""),
@@ -1926,6 +1932,8 @@ def _base_row(
         "session_id": summary.get("session_id", cue.get("session_id", "")),
         "participant_id": summary.get("participant_id", ""),
         "condition": _condition_from_plan(_text(summary.get("haptic_plan_id"))),
+        "task_type": _text(summary.get("task_type")) or "dual",
+        "nback_enabled": summary.get("nback_enabled", True),
         "plan_id": summary.get("haptic_plan_id", ""),
         "event_name": _text(cue.get("event_name")).lower(),
         "event_position": event_position,
@@ -2001,6 +2009,7 @@ def _summary_payload(
     diagnostic_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     by_condition = Counter(_text(row.get("condition")) for row in cue_rows)
+    by_task_type = Counter(_text(row.get("task_type")) for row in cue_rows)
     by_quality = Counter(_text(row.get("trial_quality")) for row in cue_rows)
     by_response_quality = Counter(_text(row.get("response_quality")) for row in cue_rows)
     by_cycle_quality = Counter(_text(row.get("cycle_quality")) for row in cue_rows)
@@ -2032,6 +2041,7 @@ def _summary_payload(
             1 for row in cue_rows if not _text(row.get("participant_id"))
         ),
         "condition_counts": dict(by_condition),
+        "task_type_counts": dict(by_task_type),
         "quality_counts": dict(by_quality),
         "response_quality_counts": dict(by_response_quality),
         "cycle_quality_counts": dict(by_cycle_quality),
