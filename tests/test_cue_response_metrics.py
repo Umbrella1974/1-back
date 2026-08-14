@@ -102,7 +102,7 @@ def test_unified_analysis_scores_wrist_and_slip_without_baseline_return(tmp_path
     assert slip_diagnostic["expected_excursion_direction"] == "pinch"
     assert slip_diagnostic["expected_excursion_detected"] == "True"
     assert summary["cue_count"] == 7
-    assert summary["cue_response_diagnostic_count"] == 5
+    assert summary["cue_response_diagnostic_count"] == 7
     assert summary["participant_id_missing_count"] == 0
 
 
@@ -240,6 +240,101 @@ def test_first_excursion_can_capture_short_up_before_down_overshoot(tmp_path) ->
     assert up_diagnostic["stable_matches_first_excursion"] == "False"
 
 
+def test_pinch_three_state_references_score_contact_release_and_slip(tmp_path) -> None:
+    session = tmp_path / "pinch_haptic_1back_three_state"
+    session.mkdir()
+    _write_json(
+        session / "summary.json",
+        {
+            "session_id": "pinch_haptic_1back_three_state",
+            "participant_id": "p01",
+            "haptic_plan_id": "only-matrix-1",
+        },
+    )
+    _write_json(
+        session / "calibration.json",
+        {
+            "min_distance": 0.02,
+            "max_distance": 0.10,
+            "threshold_a": 0.07,
+            "open_distance_median": 0.10,
+            "open_distance_mad": 0.001,
+            "contact_distance_median": 0.06,
+            "contact_distance_mad": 0.001,
+            "pinch_distance_median": 0.02,
+            "pinch_distance_mad": 0.001,
+            "open_contact_boundary": 0.08,
+            "contact_pinch_boundary": 0.04,
+            "pinch_reference_quality_passed": True,
+            "pinch_reference_quality_reason": "",
+        },
+    )
+    _write_json(
+        session / "wrist_rotation_calibration.json",
+        {
+            "classification_margin": 0.15,
+            "left_score_mean": 0.4,
+            "right_score_mean": -0.4,
+            "threshold": 0.0,
+            "up_score_mean": 0.4,
+            "down_score_mean": -0.4,
+            "up_down_threshold": 0.0,
+        },
+    )
+    _write_csv(
+        session / "haptic_events.csv",
+        [
+            _haptic("contact", 1000, 1),
+            _haptic("left", 3000, 2),
+            _haptic("slip", 5000, 3),
+            _haptic("up", 7000, 4),
+            _haptic("right", 9000, 5),
+            _haptic("down", 11000, 6),
+            _haptic("release", 13000, 7),
+        ],
+    )
+    _write_csv(
+        session / "pinch_timeseries.csv",
+        [
+            *_pinch_series((600, 700, 800, 900), 0.10, min_distance=0.02, max_distance=0.10),
+            *_pinch_series((1100, 1200, 1300), 0.06, min_distance=0.02, max_distance=0.10),
+            *_pinch_series((4600, 4700, 4800, 4900), 0.06, min_distance=0.02, max_distance=0.10),
+            *_pinch_series((5100, 5200, 5300), 0.02, min_distance=0.02, max_distance=0.10),
+            *_pinch_series((5500, 5600, 5700), 0.06, min_distance=0.02, max_distance=0.10),
+            *_pinch_series((12600, 12700, 12800, 12900), 0.06, min_distance=0.02, max_distance=0.10),
+            *_pinch_series((13100, 13200, 13300), 0.10, min_distance=0.02, max_distance=0.10),
+        ],
+    )
+    _write_csv(
+        session / "wrist_rotation_timeseries.csv",
+        [
+            _wrist(ms, 0.0, 0.0, "neutral", "neutral")
+            for ms in range(2800, 11400, 100)
+        ],
+    )
+
+    metrics_path, _, _, _ = analyze_root(tmp_path, output_dir=tmp_path / "analysis")
+
+    metrics = _read_csv(metrics_path)
+    contact = next(row for row in metrics if row["event_name"] == "contact")
+    slip = next(row for row in metrics if row["event_name"] == "slip")
+    release = next(row for row in metrics if row["event_name"] == "release")
+
+    assert contact["first_response"] == "closing"
+    assert contact["first_response_correct"] == "True"
+    assert contact["response_sequence_complete"] == "True"
+    assert contact["pre_cue_pinch_state"] == "open"
+    assert contact["entered_contact_reference"] == "True"
+    assert slip["first_response"] == "pinch"
+    assert slip["response_sequence_complete"] == "True"
+    assert slip["entered_contact_reference"] == "True"
+    assert release["first_response"] == "opening"
+    assert release["first_response_correct"] == "True"
+    assert release["response_sequence_complete"] == "True"
+    assert release["pre_cue_pinch_state"] == "contact"
+    assert release["entered_open_reference"] == "True"
+
+
 def _haptic(name: str, ms: float, trial: int, *, gate: str = "", source: str = "") -> dict[str, str]:
     return {
         "event_name": name,
@@ -261,13 +356,32 @@ def _wrist(ms: float, lr_score: float, ud_score: float, lr_class: str, ud_class:
     }
 
 
-def _pinch(ms: float, distance: float) -> dict[str, str]:
+def _pinch(
+    ms: float,
+    distance: float,
+    *,
+    min_distance: float = 0.0,
+    max_distance: float = 1.0,
+) -> dict[str, str]:
     return {
         "monotonic_ms": str(float(ms)),
         "pinch_distance": str(float(distance)),
-        "min_distance": "0.0",
-        "max_distance": "1.0",
+        "min_distance": str(float(min_distance)),
+        "max_distance": str(float(max_distance)),
     }
+
+
+def _pinch_series(
+    ms_values,
+    distance: float,
+    *,
+    min_distance: float = 0.0,
+    max_distance: float = 1.0,
+) -> list[dict[str, str]]:
+    return [
+        _pinch(ms, distance, min_distance=min_distance, max_distance=max_distance)
+        for ms in ms_values
+    ]
 
 
 def _write_json(path, payload) -> None:

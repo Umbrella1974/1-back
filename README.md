@@ -20,6 +20,7 @@ python run_pinch_haptic_1back.py --config dualtask_config.yaml
 3. 等控制台显示 MANUS TCP 正在监听 `127.0.0.1:8888` 后，再启动 `SDKMinimalClient_Windows` / `manus_vive_com` 客户端。
 4. 按控制台提示完成：
    - open hand calibration
+   - C-shape / contact calibration
    - pinch calibration
    - 如果 `wrist_rotation.enabled=true`，继续完成 neutral / left / right wrist calibration
    - 进入正式 1-back + haptic 阶段
@@ -294,18 +295,19 @@ python analyze_cue_response_metrics.py outputs\你的session根目录 --output-d
 - `cue_response_diagnostics.csv`
 - `cue_response_summary.json`
 
-当前 detector 版本是 `pilot_v0.2`，只用于 pilot 诊断。正式实验前需要冻结 detector 版本和 `clean / recoverable / contaminated` 规则，不要在正式数据出来后按结果重新调阈值。
+当前 detector 版本是 `pilot_v0.3`，只用于 pilot 诊断。正式实验前需要冻结 detector 版本和 `clean / recoverable / contaminated` 规则，不要在正式数据出来后按结果重新调阈值。
 
 当前 S-R mapping：
 
 - `left/right/up/down` 使用 `wrist_rotation_timeseries.csv` 的连续 score 离线重分类。
 - `slip` 使用 `pinch_timeseries.csv` 的 `pinch_distance`，先转成 `pinch_closure = (max_distance - pinch_distance) / (max_distance - min_distance)`。
-- `contact/release` 目前没有定义受试者行为反应，统一输出中标记为 `not_scored`。
+- 新采集数据会额外保存 `Open / C-shape / Pinch` 三个 pinch reference。reference QC 通过时，`contact/release/slip` 会进入三状态离线评分；旧数据或 reference QC 不足时会标记为 `insufficient_pinch_reference`。
 
 统一字段里要区分两类质量：
 
 - `response_quality`：是否检测到可用于 accuracy/RT 的行为反应。
 - `cycle_quality`：完整动作周期是否结束，例如 wrist 是否回到 neutral，slip 是否完成 reopening。
+- `response_sequence_complete`：语义动作序列是否完成；例如 contact 是 `Open -> C-shape`，slip 是 `C-shape -> Pinch -> C-shape`，release 是 `C-shape -> Open`。
 - `trial_quality` 目前保留为兼容字段，优先看 `response_quality` 和 `cycle_quality`。
 
 RT 字段也要分开使用：
@@ -327,7 +329,17 @@ Slip 分析：
 - 第一版观察窗口是当前 slip onset 到下一 semantic cue onset。
 - `pinch_detected` 表示 cue 后相对 pre-cue baseline 出现显著进一步捏合。
 - `release_detected` 表示 peak 后出现显著 reopening。
-- `returned_to_precue_baseline` 只是附加 QC 字段，不决定 slip 是否完成。
+- 如果 `Open / C-shape / Pinch` reference 可用，`response_sequence_complete` 表示是否完成 `C-shape -> Pinch -> C-shape`；最后不要求回到 cue 前完全相同的 `pinch_distance`。
+- `returned_to_precue_baseline` 只是附加 QC 字段，不决定三状态 slip 是否完成。
+
+Pinch 三状态 reference：
+
+- 新的 pinch calibration 会采集 `open_distance_*`、`contact_distance_*` 和 `pinch_distance_*` 分布摘要，包括 mean、median、MAD、p10、p90 和有效样本数。
+- 候选状态边界只来自个人标定中点：`open_contact_boundary = (open_median + contact_median) / 2`，`contact_pinch_boundary = (contact_median + pinch_median) / 2`。
+- reference QC 要求中位数顺序满足 `open > contact > pinch`，且 p10/p90 不明显跨过相邻中点边界；失败时只标记 reference quality 不足，不会用三状态硬评分。
+- 这些边界是离线分析候选边界，不是给受试者理解或命中的隐藏目标，也不改变实时 `open_zone / closed_zone` haptic trigger。
+- `contact` 的语义是 `Open -> C-shape`：`first_response_correct` 看第一次是否 closing，`response_sequence_complete` 看是否稳定进入 C-shape reference。
+- `release` 的语义是 `C-shape -> Open`：`first_response_correct` 看第一次是否 opening，`response_sequence_complete` 看是否稳定进入 Open reference。
 
 `up_diagnostics.csv` 专门检查 `up` cue，包含 pre-cue state、first stable direction、max up score、min down score 和 eventual up detected。当前 pilot 里 `up` 是最需要复查的 cue，不建议继续整体调 wrist detector 来“修”这些行为错误。
 

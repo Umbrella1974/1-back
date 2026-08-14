@@ -503,6 +503,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     )
     calibration_config = PinchCalibrationConfig(
         open_hand_duration_s=calibration_config_payload.get("open_hand_duration_s", 3.0),
+        contact_hand_duration_s=calibration_config_payload.get("contact_hand_duration_s", 3.0),
         pinch_hand_duration_s=calibration_config_payload.get("pinch_hand_duration_s", 3.0),
         threshold_ratio=calibration_config_payload.get("threshold_ratio", 0.65),
         min_valid_frames=calibration_config_payload.get("min_valid_frames", 30),
@@ -609,6 +610,16 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
             tcp_log_state=manus_tcp_log_state,
         )
+        input("C-shape calibration: press Enter, then keep the task-ready C-shape posture...")
+        contact_samples = _collect_live_samples(
+            server,
+            parser,
+            logger,
+            session_id=session_id,
+            duration_s=calibration_config.contact_hand_duration_s,
+            save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+            tcp_log_state=manus_tcp_log_state,
+        )
         input("Pinch calibration: press Enter, then pinch thumb and target finger...")
         pinch_samples = _collect_live_samples(
             server,
@@ -622,6 +633,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         calibration = calibrate_from_samples(
             open_samples,
             pinch_samples,
+            contact_samples=contact_samples,
             config=calibration_config,
             thumb_node_id=pinch_config.get("thumb_node_id", 4),
             target_finger_node_id=pinch_config.get("target_finger_node_id", 14),
@@ -1341,6 +1353,13 @@ def _calibration_summary_fields(
         "distance_range_ratio": calibration.distance_range_ratio,
         "calibration_passed": calibration.calibration_passed,
         "calibration_failure_reason": calibration.calibration_failure_reason,
+        "pinch_reference_quality_passed": calibration.pinch_reference_quality_passed,
+        "pinch_reference_quality_reason": calibration.pinch_reference_quality_reason,
+        "open_distance_median": calibration.open_distance_median,
+        "contact_distance_median": calibration.contact_distance_median,
+        "pinch_distance_median": calibration.pinch_distance_median,
+        "open_contact_boundary": calibration.open_contact_boundary,
+        "contact_pinch_boundary": calibration.contact_pinch_boundary,
     }
 
 

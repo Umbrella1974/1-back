@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
+from statistics import median
 from typing import Any, Iterable
 
 
@@ -12,6 +13,7 @@ class PinchCalibrationConfig:
     """Config for open/closed hand pinch distance calibration."""
 
     open_hand_duration_s: float = 3.0
+    contact_hand_duration_s: float = 3.0
     pinch_hand_duration_s: float = 3.0
     threshold_ratio: float = 0.65
     min_valid_frames: int = 30
@@ -28,6 +30,11 @@ class PinchCalibrationConfig:
             self,
             "pinch_hand_duration_s",
             _positive_float(self.pinch_hand_duration_s, "pinch_hand_duration_s"),
+        )
+        object.__setattr__(
+            self,
+            "contact_hand_duration_s",
+            _positive_float(self.contact_hand_duration_s, "contact_hand_duration_s"),
         )
         ratio = float(self.threshold_ratio)
         if not math.isfinite(ratio) or ratio < 0.0 or ratio > 1.0:
@@ -64,6 +71,27 @@ class PinchCalibrationResult:
     pinch_hand_duration_s: float
     open_valid_frame_count: int
     pinch_valid_frame_count: int
+    contact_hand_duration_s: float | None = None
+    contact_valid_frame_count: int = 0
+    open_distance_mean: float | None = None
+    open_distance_median: float | None = None
+    open_distance_mad: float | None = None
+    open_distance_p10: float | None = None
+    open_distance_p90: float | None = None
+    contact_distance_mean: float | None = None
+    contact_distance_median: float | None = None
+    contact_distance_mad: float | None = None
+    contact_distance_p10: float | None = None
+    contact_distance_p90: float | None = None
+    pinch_distance_mean: float | None = None
+    pinch_distance_median: float | None = None
+    pinch_distance_mad: float | None = None
+    pinch_distance_p10: float | None = None
+    pinch_distance_p90: float | None = None
+    open_contact_boundary: float | None = None
+    contact_pinch_boundary: float | None = None
+    pinch_reference_quality_passed: bool | None = None
+    pinch_reference_quality_reason: str = ""
     distance_range: float | None = None
     distance_range_ratio: float | None = None
     calibration_passed: bool = True
@@ -107,6 +135,7 @@ def calibrate_from_samples(
     open_samples: Iterable[Any],
     pinch_samples: Iterable[Any],
     *,
+    contact_samples: Iterable[Any] | None = None,
     config: PinchCalibrationConfig | None = None,
     thumb_node_id: int = 4,
     target_finger_node_id: int = 14,
@@ -116,6 +145,9 @@ def calibrate_from_samples(
     return calibrate_from_distances(
         _valid_distances(open_samples),
         _valid_distances(pinch_samples),
+        contact_distances=(
+            _valid_distances(contact_samples) if contact_samples is not None else None
+        ),
         config=config,
         thumb_node_id=thumb_node_id,
         target_finger_node_id=target_finger_node_id,
@@ -126,6 +158,7 @@ def calibrate_from_distances(
     open_distances: Iterable[float],
     pinch_distances: Iterable[float],
     *,
+    contact_distances: Iterable[float] | None = None,
     config: PinchCalibrationConfig | None = None,
     thumb_node_id: int = 4,
     target_finger_node_id: int = 14,
@@ -135,9 +168,19 @@ def calibrate_from_distances(
     calibration_config = config or PinchCalibrationConfig()
     open_values = [_positive_float(value, "open_distance") for value in open_distances]
     pinch_values = [_positive_float(value, "pinch_distance") for value in pinch_distances]
+    contact_values = (
+        [_positive_float(value, "contact_distance") for value in contact_distances]
+        if contact_distances is not None
+        else []
+    )
     if len(open_values) < calibration_config.min_valid_frames:
         raise ValueError(
             f"open hand valid frame count {len(open_values)} is less than "
+            f"min_valid_frames {calibration_config.min_valid_frames}."
+        )
+    if contact_distances is not None and len(contact_values) < calibration_config.min_valid_frames:
+        raise ValueError(
+            f"contact hand valid frame count {len(contact_values)} is less than "
             f"min_valid_frames {calibration_config.min_valid_frames}."
         )
     if len(pinch_values) < calibration_config.min_valid_frames:
@@ -158,6 +201,10 @@ def calibrate_from_distances(
         max_distance=max_distance,
         config=calibration_config,
     )
+    open_summary = _distribution_summary(open_values)
+    contact_summary = _distribution_summary(contact_values) if contact_values else {}
+    pinch_summary = _distribution_summary(pinch_values)
+    reference_quality = _pinch_reference_quality(open_summary, contact_summary, pinch_summary)
     return PinchCalibrationResult(
         min_distance=min_distance,
         max_distance=max_distance,
@@ -166,9 +213,32 @@ def calibrate_from_distances(
         thumb_node_id=int(thumb_node_id),
         target_finger_node_id=int(target_finger_node_id),
         open_hand_duration_s=calibration_config.open_hand_duration_s,
+        contact_hand_duration_s=(
+            calibration_config.contact_hand_duration_s if contact_values else None
+        ),
         pinch_hand_duration_s=calibration_config.pinch_hand_duration_s,
         open_valid_frame_count=len(open_values),
+        contact_valid_frame_count=len(contact_values),
         pinch_valid_frame_count=len(pinch_values),
+        open_distance_mean=open_summary.get("mean"),
+        open_distance_median=open_summary.get("median"),
+        open_distance_mad=open_summary.get("mad"),
+        open_distance_p10=open_summary.get("p10"),
+        open_distance_p90=open_summary.get("p90"),
+        contact_distance_mean=contact_summary.get("mean"),
+        contact_distance_median=contact_summary.get("median"),
+        contact_distance_mad=contact_summary.get("mad"),
+        contact_distance_p10=contact_summary.get("p10"),
+        contact_distance_p90=contact_summary.get("p90"),
+        pinch_distance_mean=pinch_summary.get("mean"),
+        pinch_distance_median=pinch_summary.get("median"),
+        pinch_distance_mad=pinch_summary.get("mad"),
+        pinch_distance_p10=pinch_summary.get("p10"),
+        pinch_distance_p90=pinch_summary.get("p90"),
+        open_contact_boundary=reference_quality.get("open_contact_boundary"),
+        contact_pinch_boundary=reference_quality.get("contact_pinch_boundary"),
+        pinch_reference_quality_passed=reference_quality.get("passed"),
+        pinch_reference_quality_reason=reference_quality.get("reason", ""),
         distance_range=quality["distance_range"],
         distance_range_ratio=quality["distance_range_ratio"],
         calibration_passed=quality["calibration_passed"],
@@ -201,6 +271,67 @@ def check_calibration_quality(
         "calibration_passed": not failure_reason,
         "calibration_failure_reason": failure_reason,
     }
+
+
+def _distribution_summary(values: list[float]) -> dict[str, float]:
+    ordered = sorted(values)
+    center = median(ordered)
+    return {
+        "mean": sum(ordered) / len(ordered),
+        "median": center,
+        "mad": median([abs(value - center) for value in ordered]),
+        "p10": _percentile(ordered, 0.10),
+        "p90": _percentile(ordered, 0.90),
+    }
+
+
+def _pinch_reference_quality(
+    open_summary: dict[str, float],
+    contact_summary: dict[str, float],
+    pinch_summary: dict[str, float],
+) -> dict[str, Any]:
+    if not contact_summary:
+        return {"passed": None, "reason": "contact_reference_not_collected"}
+    open_median = open_summary["median"]
+    contact_median = contact_summary["median"]
+    pinch_median = pinch_summary["median"]
+    if not (open_median > contact_median > pinch_median):
+        return {
+            "passed": False,
+            "reason": "reference_order_not_open_contact_pinch",
+        }
+    open_contact_boundary = (open_median + contact_median) / 2.0
+    contact_pinch_boundary = (contact_median + pinch_median) / 2.0
+    overlap_reasons = []
+    if open_summary["p10"] < open_contact_boundary:
+        overlap_reasons.append("open_distribution_crosses_open_contact_boundary")
+    if contact_summary["p90"] > open_contact_boundary:
+        overlap_reasons.append("contact_distribution_crosses_open_contact_boundary")
+    if contact_summary["p10"] < contact_pinch_boundary:
+        overlap_reasons.append("contact_distribution_crosses_contact_pinch_boundary")
+    if pinch_summary["p90"] > contact_pinch_boundary:
+        overlap_reasons.append("pinch_distribution_crosses_contact_pinch_boundary")
+    return {
+        "passed": not overlap_reasons,
+        "reason": ";".join(overlap_reasons),
+        "open_contact_boundary": open_contact_boundary,
+        "contact_pinch_boundary": contact_pinch_boundary,
+    }
+
+
+def _percentile(ordered_values: list[float], fraction: float) -> float:
+    if not ordered_values:
+        raise ValueError("ordered_values must not be empty.")
+    if len(ordered_values) == 1:
+        return ordered_values[0]
+    rank = (len(ordered_values) - 1) * fraction
+    lower_index = int(math.floor(rank))
+    upper_index = int(math.ceil(rank))
+    if lower_index == upper_index:
+        return ordered_values[lower_index]
+    lower = ordered_values[lower_index]
+    upper = ordered_values[upper_index]
+    return lower + (upper - lower) * (rank - lower_index)
 
 
 def is_in_open_zone(distance: float | None, calibration: PinchCalibrationResult) -> bool:

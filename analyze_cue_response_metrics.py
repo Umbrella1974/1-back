@@ -12,9 +12,10 @@ from statistics import median
 from typing import Any, Callable
 
 
-DETECTOR_VERSION = "pilot_v0.2"
+DETECTOR_VERSION = "pilot_v0.3"
 WRIST_EVENTS = {"left", "right", "up", "down"}
 PINCH_EVENTS = {"slip"}
+PINCH_STATE_EVENTS = {"contact", "release"}
 SEMANTIC_EVENTS = WRIST_EVENTS | PINCH_EVENTS | {"contact", "release"}
 BASELINE_WINDOW_MS = 500.0
 STABLE_MS = 150.0
@@ -47,6 +48,7 @@ UNIFIED_FIELDS = [
     "was_corrected",
     "correction_time_ms",
     "eventual_correct",
+    "response_sequence_complete",
     "response_end_ms",
     "full_cycle_ms",
     "response_quality",
@@ -83,6 +85,22 @@ WRIST_EXTRA_FIELDS = [
 ]
 
 SLIP_EXTRA_FIELDS = [
+    "pinch_reference_quality_passed",
+    "pinch_reference_quality_reason",
+    "contact_reference_available",
+    "pre_cue_pinch_state",
+    "post_cue_target_state",
+    "baseline_pinch_distance",
+    "distance_to_open",
+    "distance_to_contact",
+    "distance_to_pinch",
+    "baseline_reference_position",
+    "entered_open_reference",
+    "entered_contact_reference",
+    "entered_pinch_reference",
+    "open_reference_onset_ms",
+    "contact_reference_onset_ms",
+    "pinch_reference_onset_ms",
     "baseline_closure",
     "baseline_closure_mad",
     "baseline_stability",
@@ -190,7 +208,8 @@ def analyze_root(
         semantic_haptics = _semantic_haptic_rows(haptics)
         if not _is_analyzable_session(summary, semantic_haptics):
             continue
-        calibration = _read_json(session_dir / "wrist_rotation_calibration.json")
+        wrist_calibration = _read_json(session_dir / "wrist_rotation_calibration.json")
+        pinch_calibration = _read_json(session_dir / "calibration.json")
         wrist = _read_csv(session_dir / "wrist_rotation_timeseries.csv")
         pinch = _read_csv(session_dir / "pinch_timeseries.csv")
         for event_position, cue in enumerate(semantic_haptics, start=1):
@@ -205,7 +224,7 @@ def analyze_root(
                     next_onset_ms=next_onset,
                     summary=summary,
                     wrist_rows=wrist,
-                    calibration=calibration,
+                    calibration=wrist_calibration,
                 )
                 cue_rows.append(row)
                 wrist_rows.append(audit)
@@ -213,7 +232,7 @@ def analyze_root(
                     _wrist_excursion_diagnostic_row(
                         row,
                         wrist_rows=wrist,
-                        calibration=calibration,
+                        calibration=wrist_calibration,
                     )
                 )
                 if up_diagnostic is not None:
@@ -225,6 +244,18 @@ def analyze_root(
                     next_onset_ms=next_onset,
                     summary=summary,
                     pinch_rows=pinch,
+                    pinch_calibration=pinch_calibration,
+                )
+                cue_rows.append(row)
+                diagnostic_rows.append(_pinch_excursion_diagnostic_row(row, pinch_rows=pinch))
+            elif event_name in PINCH_STATE_EVENTS:
+                row = _analyze_pinch_state_cue(
+                    cue,
+                    event_position=event_position,
+                    next_onset_ms=next_onset,
+                    summary=summary,
+                    pinch_rows=pinch,
+                    pinch_calibration=pinch_calibration,
                 )
                 cue_rows.append(row)
                 diagnostic_rows.append(_pinch_excursion_diagnostic_row(row, pinch_rows=pinch))
@@ -499,6 +530,199 @@ def _analyze_wrist_cue(
     return filled, _wrist_audit_row(base), _up_diagnostic_row(base) if event_name == "up" else None
 
 
+def _analyze_pinch_state_cue(
+    cue: dict[str, str],
+    *,
+    event_position: int,
+    next_onset_ms: float | None,
+    summary: dict[str, Any],
+    pinch_rows: list[dict[str, str]],
+    pinch_calibration: dict[str, Any],
+) -> dict[str, Any]:
+    event_name = _text(cue.get("event_name")).lower()
+    onset = _float_or_none(cue.get("actual_emit_ms") or cue.get("monotonic_ms"))
+    base = _base_row(cue, event_position, next_onset_ms, summary)
+    expected_direction = "closing" if event_name == "contact" else "opening"
+    target_state = "contact" if event_name == "contact" else "open"
+    base.update(
+        {
+            "response_source": "pinch",
+            "expected_response": (
+                "open_to_contact" if event_name == "contact" else "contact_to_open"
+            ),
+            "post_cue_target_state": target_state,
+            "detector_version": DETECTOR_VERSION,
+        }
+    )
+    if onset is None or not pinch_rows:
+        base.update(
+            {
+                "trial_quality": "insufficient_pinch_data",
+                "quality_reason": "missing_onset_or_pinch_timeseries",
+                "response_quality": "insufficient_pinch_data",
+                "response_quality_reason": "missing_onset_or_pinch_timeseries",
+                "cycle_quality": "not_applicable",
+                "cycle_quality_reason": "missing_onset_or_pinch_timeseries",
+            }
+        )
+        return _fill_output_row(base)
+
+    samples = _pinch_closure_samples(pinch_rows)
+    reference = _pinch_reference_model(pinch_calibration)
+    baseline = [
+        item
+        for item in samples
+        if onset - BASELINE_WINDOW_MS <= item["monotonic_ms"] < onset
+    ]
+    if len(baseline) < 3:
+        base.update(
+            {
+                **_pinch_reference_fields(reference, None),
+                "trial_quality": "insufficient_pinch_data",
+                "quality_reason": "too_few_baseline_samples",
+                "response_quality": "insufficient_pinch_data",
+                "response_quality_reason": "too_few_baseline_samples",
+                "cycle_quality": "not_applicable",
+                "cycle_quality_reason": "too_few_baseline_samples",
+            }
+        )
+        return _fill_output_row(base)
+    baseline_values = [item["pinch_distance"] for item in baseline]
+    baseline_distance = median(baseline_values)
+    baseline_mad = _mad(baseline_values, baseline_distance)
+    base.update(
+        {
+            **_pinch_reference_fields(reference, baseline_distance),
+            "baseline_pinch_distance": baseline_distance,
+            "baseline_stability": baseline_mad,
+            "pre_cue_pinch_state": _pinch_state_for_distance(baseline_distance, reference),
+        }
+    )
+    if not reference.get("available"):
+        reason = "pinch_reference_quality_insufficient"
+        if not reference.get("contact_reference_available"):
+            reason = "contact_reference_not_available"
+        base.update(
+            {
+                "trial_quality": "insufficient_pinch_reference",
+                "quality_reason": reason,
+                "response_quality": "insufficient_pinch_reference",
+                "response_quality_reason": reason,
+                "cycle_quality": "not_applicable",
+                "cycle_quality_reason": reason,
+                "response_sequence_complete": False,
+            }
+        )
+        return _fill_output_row(base)
+
+    end = next_onset_ms if next_onset_ms is not None else onset + 8000.0
+    window = [item for item in samples if onset <= item["monotonic_ms"] < end]
+    if len(window) < 3:
+        base.update(
+            {
+                "trial_quality": "insufficient_pinch_data",
+                "quality_reason": "too_few_response_samples",
+                "response_quality": "insufficient_pinch_data",
+                "response_quality_reason": "too_few_response_samples",
+                "cycle_quality": "not_applicable",
+                "cycle_quality_reason": "too_few_response_samples",
+            }
+        )
+        return _fill_output_row(base)
+
+    movement_threshold = max(
+        baseline_mad * 4.0,
+        float(reference.get("open_mad") or 0.0) * 4.0,
+        float(reference.get("contact_mad") or 0.0) * 4.0,
+        float(reference.get("pinch_mad") or 0.0) * 4.0,
+        1e-6,
+    )
+    first_response = _first_stable_pinch_direction(
+        window,
+        baseline_distance=baseline_distance,
+        threshold=movement_threshold,
+        stable_ms=EXCURSION_STABLE_MS,
+    )
+    correct_response = None
+    if first_response is not None and first_response["direction"] == expected_direction:
+        correct_response = first_response
+    else:
+        correct_response = _first_stable_pinch_direction(
+            window,
+            baseline_distance=baseline_distance,
+            threshold=movement_threshold,
+            stable_ms=EXCURSION_STABLE_MS,
+            expected_direction=expected_direction,
+        )
+    target = _first_stable_pinch_state(
+        window,
+        reference,
+        state=target_state,
+        stable_ms=STABLE_MS,
+    )
+    first_correct = (
+        None if first_response is None else first_response["direction"] == expected_direction
+    )
+    sequence_complete = target is not None
+    if correct_response is None:
+        response_quality, response_reason = "contaminated", "no_correct_pinch_direction_before_next_cue"
+    else:
+        response_quality, response_reason = "clean", ""
+    if sequence_complete:
+        cycle_quality, cycle_reason = "complete", ""
+        trial_quality, reason = response_quality, response_reason
+    else:
+        cycle_quality, cycle_reason = "incomplete_target_state", f"no_stable_{target_state}_reference_before_next_cue"
+        trial_quality, reason = "partial_no_target_state", cycle_reason
+    base.update(
+        {
+            "response_onset_ms": correct_response["monotonic_ms"] if correct_response else None,
+            "response_rt_ms": (
+                float(correct_response["monotonic_ms"]) - onset if correct_response else None
+            ),
+            "first_response_onset_ms": (
+                first_response["monotonic_ms"] if first_response else None
+            ),
+            "first_response_rt_ms": (
+                float(first_response["monotonic_ms"]) - onset if first_response else None
+            ),
+            "correct_response_onset_ms": (
+                correct_response["monotonic_ms"] if correct_response else None
+            ),
+            "correct_response_rt_ms": (
+                float(correct_response["monotonic_ms"]) - onset if correct_response else None
+            ),
+            "first_response": first_response["direction"] if first_response else "",
+            "first_response_correct": first_correct,
+            "was_corrected": first_correct is False and correct_response is not None,
+            "correction_time_ms": (
+                float(correct_response["monotonic_ms"]) - onset
+                if first_correct is False and correct_response is not None
+                else None
+            ),
+            "eventual_correct": sequence_complete,
+            "response_sequence_complete": sequence_complete,
+            "response_end_ms": target["stable_until_ms"] if target else None,
+            "full_cycle_ms": float(target["stable_until_ms"]) - onset if target else None,
+            "entered_open_reference": target_state == "open" and target is not None,
+            "entered_contact_reference": target_state == "contact" and target is not None,
+            "open_reference_onset_ms": (
+                target["monotonic_ms"] if target_state == "open" and target else None
+            ),
+            "contact_reference_onset_ms": (
+                target["monotonic_ms"] if target_state == "contact" and target else None
+            ),
+            "response_quality": response_quality,
+            "response_quality_reason": response_reason,
+            "cycle_quality": cycle_quality,
+            "cycle_quality_reason": cycle_reason,
+            "trial_quality": trial_quality,
+            "quality_reason": reason,
+        }
+    )
+    return _fill_output_row(base)
+
+
 def _analyze_slip_cue(
     cue: dict[str, str],
     *,
@@ -506,6 +730,7 @@ def _analyze_slip_cue(
     next_onset_ms: float | None,
     summary: dict[str, Any],
     pinch_rows: list[dict[str, str]],
+    pinch_calibration: dict[str, Any],
 ) -> dict[str, Any]:
     onset = _float_or_none(cue.get("actual_emit_ms") or cue.get("monotonic_ms"))
     base = _base_row(cue, event_position, next_onset_ms, summary)
@@ -530,6 +755,7 @@ def _analyze_slip_cue(
         return _fill_output_row(base)
 
     samples = _pinch_closure_samples(pinch_rows)
+    reference = _pinch_reference_model(pinch_calibration)
     baseline = [
         item
         for item in samples
@@ -548,7 +774,9 @@ def _analyze_slip_cue(
         )
         return _fill_output_row(base)
     baseline_values = [item["closure"] for item in baseline]
+    baseline_distance_values = [item["pinch_distance"] for item in baseline]
     baseline_closure = median(baseline_values)
+    baseline_distance = median(baseline_distance_values)
     baseline_mad = _mad(baseline_values, baseline_closure)
     threshold = max(PINCH_MIN_DELTA, 3.0 * baseline_mad)
     return_tolerance = max(BASELINE_RETURN_MIN_DELTA, 2.0 * baseline_mad)
@@ -589,12 +817,33 @@ def _analyze_slip_cue(
             condition=lambda value: value <= baseline_closure + return_tolerance,
             stable_ms=STABLE_MS,
         )
+    contact_reference = None
+    if pinch is not None and reference.get("available"):
+        after_peak = [item for item in window if item["monotonic_ms"] >= peak["monotonic_ms"]]
+        contact_reference = _first_stable_pinch_state(
+            after_peak,
+            reference,
+            state="contact",
+            stable_ms=STABLE_MS,
+        )
     pinch_detected = pinch is not None
     release_detected = release is not None
-    if pinch_detected and release_detected:
+    response_sequence_complete = (
+        pinch_detected
+        and (
+            contact_reference is not None
+            if reference.get("available")
+            else release_detected
+        )
+    )
+    if pinch_detected and release_detected and response_sequence_complete:
         response_quality, response_reason = "clean", ""
         cycle_quality, cycle_reason = "complete", ""
         quality, reason = "clean", ""
+    elif pinch_detected and release_detected and reference.get("available"):
+        response_quality, response_reason = "clean", ""
+        cycle_quality, cycle_reason = "incomplete_contact_return", "no_stable_contact_reference_return_before_next_cue"
+        quality, reason = "partial_no_contact_return", cycle_reason
     elif baseline_closure >= SATURATED_CLOSURE and not pinch_detected:
         response_quality, response_reason = (
             "already_saturated",
@@ -617,11 +866,16 @@ def _analyze_slip_cue(
     base.update(
         {
             "baseline_closure": baseline_closure,
+            "baseline_pinch_distance": baseline_distance,
             "baseline_closure_mad": baseline_mad,
             "baseline_stability": baseline_mad,
+            **_pinch_reference_fields(reference, baseline_distance),
+            "pre_cue_pinch_state": _pinch_state_for_distance(baseline_distance, reference),
+            "post_cue_target_state": "contact",
             "pinch_onset_ms": pinch["monotonic_ms"] if pinch else None,
             "pinch_rt_ms": float(pinch["monotonic_ms"]) - onset if pinch else None,
             "pinch_detected": pinch_detected,
+            "pinch_reference_onset_ms": pinch["monotonic_ms"] if pinch else None,
             "peak_closure": peak["closure"],
             "peak_closure_delta": peak["closure"] - baseline_closure,
             "peak_time_ms": peak["monotonic_ms"],
@@ -636,6 +890,10 @@ def _analyze_slip_cue(
                 returned["stable_until_ms"] if returned else None
             ),
             "returned_to_precue_baseline": returned is not None,
+            "entered_contact_reference": contact_reference is not None,
+            "contact_reference_onset_ms": (
+                contact_reference["monotonic_ms"] if contact_reference else None
+            ),
             "response_onset_ms": pinch["monotonic_ms"] if pinch else None,
             "response_rt_ms": float(pinch["monotonic_ms"]) - onset if pinch else None,
             "first_response_onset_ms": pinch["monotonic_ms"] if pinch else None,
@@ -646,10 +904,22 @@ def _analyze_slip_cue(
             "first_response_correct": pinch_detected,
             "was_corrected": False,
             "correction_time_ms": None,
-            "eventual_correct": pinch_detected and release_detected,
-            "response_end_ms": release["stable_until_ms"] if release else None,
+            "eventual_correct": response_sequence_complete,
+            "response_sequence_complete": response_sequence_complete,
+            "response_end_ms": (
+                contact_reference["stable_until_ms"]
+                if contact_reference
+                else (release["stable_until_ms"] if release else None)
+            ),
             "full_cycle_ms": (
-                float(release["stable_until_ms"]) - onset if release else None
+                float(
+                    contact_reference["stable_until_ms"]
+                    if contact_reference
+                    else release["stable_until_ms"]
+                )
+                - onset
+                if contact_reference or release
+                else None
             ),
             "response_quality": response_quality,
             "response_quality_reason": response_reason,
@@ -898,6 +1168,8 @@ def _pinch_excursion_diagnostic_row(
 ) -> dict[str, Any]:
     onset = _float_or_none(row.get("cue_onset_ms"))
     end = _float_or_none(row.get("next_cue_onset_ms"))
+    event_name = _text(row.get("event_name")).lower()
+    expected_direction = "release" if event_name == "release" else "pinch"
     if onset is None:
         return _fill_diagnostic_row(
             _base_diagnostic_row(row, response_source="pinch", analysis_axis="pinch_closure")
@@ -912,7 +1184,7 @@ def _pinch_excursion_diagnostic_row(
         closure_samples,
         onset_ms=onset,
         end_ms=end,
-        expected_direction="pinch",
+        expected_direction=expected_direction,
         first_label="pinch",
         first_mean=1.0,
         second_label="release",
@@ -924,18 +1196,30 @@ def _pinch_excursion_diagnostic_row(
     )
     diagnostic.update(
         {
-            "expected_excursion_direction": "pinch",
-            "first_stable_direction": row.get("first_response", ""),
+            "expected_excursion_direction": expected_direction,
+            "first_stable_direction": _pinch_response_as_excursion_label(
+                row.get("first_response", "")
+            ),
             "first_stable_rt_ms": row.get("first_response_rt_ms", ""),
             "stable_matches_first_excursion": (
-                _text(row.get("first_response"))
+                _pinch_response_as_excursion_label(row.get("first_response", ""))
                 == _text(diagnostic.get("first_excursion_direction"))
-                if _text(row.get("first_response")) and _text(diagnostic.get("first_excursion_direction"))
+                if _pinch_response_as_excursion_label(row.get("first_response", ""))
+                and _text(diagnostic.get("first_excursion_direction"))
                 else ""
             ),
         }
     )
     return _fill_diagnostic_row(diagnostic)
+
+
+def _pinch_response_as_excursion_label(value: Any) -> str:
+    text = _text(value).lower()
+    if text == "closing":
+        return "pinch"
+    if text == "opening":
+        return "release"
+    return text
 
 
 def _base_diagnostic_row(
@@ -1406,6 +1690,199 @@ def _pinch_closure_samples(rows: list[dict[str, str]]) -> list[dict[str, float]]
         closure = (max_distance - distance) / (max_distance - min_distance)
         samples.append({"monotonic_ms": ms, "closure": closure, "pinch_distance": distance})
     return samples
+
+
+def _pinch_reference_model(calibration: dict[str, Any]) -> dict[str, Any]:
+    open_distance = _float_or_none(calibration.get("open_distance_median"))
+    contact_distance = _float_or_none(calibration.get("contact_distance_median"))
+    pinch_distance = _float_or_none(calibration.get("pinch_distance_median"))
+    open_contact_boundary = _float_or_none(calibration.get("open_contact_boundary"))
+    contact_pinch_boundary = _float_or_none(calibration.get("contact_pinch_boundary"))
+    quality = _bool_value(calibration.get("pinch_reference_quality_passed"))
+    reason = _text(calibration.get("pinch_reference_quality_reason"))
+    contact_available = contact_distance is not None
+    if (
+        open_contact_boundary is None
+        and open_distance is not None
+        and contact_distance is not None
+    ):
+        open_contact_boundary = (open_distance + contact_distance) / 2.0
+    if (
+        contact_pinch_boundary is None
+        and contact_distance is not None
+        and pinch_distance is not None
+    ):
+        contact_pinch_boundary = (contact_distance + pinch_distance) / 2.0
+    available = (
+        quality is True
+        and open_distance is not None
+        and contact_distance is not None
+        and pinch_distance is not None
+        and open_contact_boundary is not None
+        and contact_pinch_boundary is not None
+    )
+    return {
+        "available": available,
+        "quality_passed": quality,
+        "quality_reason": reason,
+        "contact_reference_available": contact_available,
+        "open_distance": open_distance,
+        "contact_distance": contact_distance,
+        "pinch_distance": pinch_distance,
+        "open_mad": _float_or_none(calibration.get("open_distance_mad")),
+        "contact_mad": _float_or_none(calibration.get("contact_distance_mad")),
+        "pinch_mad": _float_or_none(calibration.get("pinch_distance_mad")),
+        "open_contact_boundary": open_contact_boundary,
+        "contact_pinch_boundary": contact_pinch_boundary,
+    }
+
+
+def _pinch_reference_fields(
+    reference: dict[str, Any],
+    distance: float | None,
+) -> dict[str, Any]:
+    return {
+        "pinch_reference_quality_passed": reference.get("quality_passed"),
+        "pinch_reference_quality_reason": reference.get("quality_reason", ""),
+        "contact_reference_available": reference.get("contact_reference_available", False),
+        "distance_to_open": _reference_distance(distance, reference.get("open_distance")),
+        "distance_to_contact": _reference_distance(distance, reference.get("contact_distance")),
+        "distance_to_pinch": _reference_distance(distance, reference.get("pinch_distance")),
+        "baseline_reference_position": _pinch_reference_position(distance, reference),
+    }
+
+
+def _reference_distance(value: float | None, reference_value: Any) -> float | None:
+    reference_float = _float_or_none(reference_value)
+    if value is None or reference_float is None:
+        return None
+    return abs(float(value) - reference_float)
+
+
+def _pinch_reference_position(
+    distance: float | None,
+    reference: dict[str, Any],
+) -> float | None:
+    if distance is None:
+        return None
+    open_distance = _float_or_none(reference.get("open_distance"))
+    contact_distance = _float_or_none(reference.get("contact_distance"))
+    pinch_distance = _float_or_none(reference.get("pinch_distance"))
+    if open_distance is None or contact_distance is None or pinch_distance is None:
+        return None
+    if not (open_distance > contact_distance > pinch_distance):
+        return None
+    value = float(distance)
+    if value >= contact_distance:
+        return (open_distance - value) / (open_distance - contact_distance)
+    return 1.0 + (contact_distance - value) / (contact_distance - pinch_distance)
+
+
+def _pinch_state_for_distance(
+    distance: float | None,
+    reference: dict[str, Any],
+) -> str:
+    if distance is None or not reference.get("available"):
+        return ""
+    open_contact_boundary = _float_or_none(reference.get("open_contact_boundary"))
+    contact_pinch_boundary = _float_or_none(reference.get("contact_pinch_boundary"))
+    if open_contact_boundary is None or contact_pinch_boundary is None:
+        return ""
+    value = float(distance)
+    if value >= open_contact_boundary:
+        return "open"
+    if value <= contact_pinch_boundary:
+        return "pinch"
+    return "contact"
+
+
+def _first_stable_pinch_direction(
+    rows: list[dict[str, float]],
+    *,
+    baseline_distance: float,
+    threshold: float,
+    stable_ms: float,
+    expected_direction: str | None = None,
+) -> dict[str, Any] | None:
+    labels = {expected_direction} if expected_direction else {"opening", "closing"}
+    active_label = ""
+    active_start: dict[str, float] | None = None
+    previous: dict[str, float] | None = None
+    for row in rows:
+        value = float(row["pinch_distance"])
+        if value <= baseline_distance - threshold:
+            label = "closing"
+        elif value >= baseline_distance + threshold:
+            label = "opening"
+        else:
+            label = ""
+        if label in labels:
+            if label != active_label:
+                active_label = label
+                active_start = row
+            previous = row
+            if active_start is not None and row["monotonic_ms"] - active_start["monotonic_ms"] >= stable_ms:
+                return {
+                    "direction": label,
+                    "monotonic_ms": active_start["monotonic_ms"],
+                    "stable_until_ms": row["monotonic_ms"],
+                    "pinch_distance": active_start["pinch_distance"],
+                }
+            continue
+        active_label = ""
+        active_start = None
+        previous = row
+    if (
+        active_label in labels
+        and active_start is not None
+        and previous is not None
+        and previous["monotonic_ms"] - active_start["monotonic_ms"] >= stable_ms
+    ):
+        return {
+            "direction": active_label,
+            "monotonic_ms": active_start["monotonic_ms"],
+            "stable_until_ms": previous["monotonic_ms"],
+            "pinch_distance": active_start["pinch_distance"],
+        }
+    return None
+
+
+def _first_stable_pinch_state(
+    rows: list[dict[str, float]],
+    reference: dict[str, Any],
+    *,
+    state: str,
+    stable_ms: float,
+) -> dict[str, Any] | None:
+    active_start: dict[str, float] | None = None
+    previous: dict[str, float] | None = None
+    for row in rows:
+        if _pinch_state_for_distance(row["pinch_distance"], reference) == state:
+            if active_start is None:
+                active_start = row
+            previous = row
+            if row["monotonic_ms"] - active_start["monotonic_ms"] >= stable_ms:
+                return {
+                    "state": state,
+                    "monotonic_ms": active_start["monotonic_ms"],
+                    "stable_until_ms": row["monotonic_ms"],
+                    "pinch_distance": active_start["pinch_distance"],
+                }
+            continue
+        active_start = None
+        previous = row
+    if (
+        active_start is not None
+        and previous is not None
+        and previous["monotonic_ms"] - active_start["monotonic_ms"] >= stable_ms
+    ):
+        return {
+            "state": state,
+            "monotonic_ms": active_start["monotonic_ms"],
+            "stable_until_ms": previous["monotonic_ms"],
+            "pinch_distance": active_start["pinch_distance"],
+        }
+    return None
 
 
 def _semantic_haptic_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
