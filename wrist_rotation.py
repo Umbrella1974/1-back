@@ -86,6 +86,16 @@ class WristRotationCalibrationResult:
     up_down_failure_reason: str = ""
     valid_frame_counts: dict[str, int] = field(default_factory=dict)
     classification_margin: float = 0.15
+    neutral_lr_score_summary: dict[str, float | int | None] = field(default_factory=dict)
+    left_lr_score_summary: dict[str, float | int | None] = field(default_factory=dict)
+    right_lr_score_summary: dict[str, float | int | None] = field(default_factory=dict)
+    lr_old_neutral_region: dict[str, float | bool | None] = field(default_factory=dict)
+    lr_neutral_centered_region: dict[str, float | bool | None] = field(default_factory=dict)
+    neutral_up_down_score_summary: dict[str, float | int | None] = field(default_factory=dict)
+    up_score_summary: dict[str, float | int | None] = field(default_factory=dict)
+    down_score_summary: dict[str, float | int | None] = field(default_factory=dict)
+    up_down_old_neutral_region: dict[str, float | bool | None] = field(default_factory=dict)
+    up_down_neutral_centered_region: dict[str, float | bool | None] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -294,10 +304,15 @@ def calibrate_wrist_rotation(
 
     left_score = _score(left_mean, neutral_mean, axis)
     right_score = _score(right_mean, neutral_mean, axis)
+    threshold = (left_score + right_score) / 2.0
+    neutral_lr_scores = [_score(q, neutral_mean, axis) for q in neutral_values]
+    left_lr_scores = [_score(q, neutral_mean, axis) for q in left_values]
+    right_lr_scores = [_score(q, neutral_mean, axis) for q in right_values]
     up_down_fields: dict[str, Any] = {}
     if cfg.enable_up_down:
         up_down_fields = _calibrate_up_down_fields(
             neutral_mean,
+            neutral_values,
             up_values,
             down_values,
             config=cfg,
@@ -313,16 +328,30 @@ def calibrate_wrist_rotation(
         rotation_axis_vector=axis,
         left_score_mean=left_score,
         right_score_mean=right_score,
-        threshold=(left_score + right_score) / 2.0,
+        threshold=threshold,
         calibration_passed=True,
         valid_frame_counts=counts,
         classification_margin=cfg.classification_margin,
+        neutral_lr_score_summary=_score_summary(neutral_lr_scores),
+        left_lr_score_summary=_score_summary(left_lr_scores),
+        right_lr_score_summary=_score_summary(right_lr_scores),
+        lr_old_neutral_region=_old_neutral_region(
+            threshold=threshold,
+            first_score=left_score,
+            second_score=right_score,
+            margin_ratio=cfg.classification_margin,
+        ),
+        lr_neutral_centered_region=_neutral_centered_region(
+            positive_score=left_score,
+            negative_score=right_score,
+        ),
         **up_down_fields,
     )
 
 
 def _calibrate_up_down_fields(
     neutral_mean: tuple[float, float, float, float],
+    neutral_values: list[tuple[float, float, float, float]],
     up_values: list[tuple[float, float, float, float]],
     down_values: list[tuple[float, float, float, float]],
     *,
@@ -349,6 +378,10 @@ def _calibrate_up_down_fields(
         }
     up_score = _score(up_mean, neutral_mean, axis)
     down_score = _score(down_mean, neutral_mean, axis)
+    threshold = (up_score + down_score) / 2.0
+    neutral_scores = [_score(q, neutral_mean, axis) for q in neutral_values]
+    up_scores = [_score(q, neutral_mean, axis) for q in up_values]
+    down_scores = [_score(q, neutral_mean, axis) for q in down_values]
     return {
         "up_mean_q": up_mean,
         "down_mean_q": down_mean,
@@ -357,9 +390,22 @@ def _calibrate_up_down_fields(
         "up_down_axis_vector": axis,
         "up_score_mean": up_score,
         "down_score_mean": down_score,
-        "up_down_threshold": (up_score + down_score) / 2.0,
+        "up_down_threshold": threshold,
         "up_down_calibration_passed": True,
         "up_down_failure_reason": "",
+        "neutral_up_down_score_summary": _score_summary(neutral_scores),
+        "up_score_summary": _score_summary(up_scores),
+        "down_score_summary": _score_summary(down_scores),
+        "up_down_old_neutral_region": _old_neutral_region(
+            threshold=threshold,
+            first_score=up_score,
+            second_score=down_score,
+            margin_ratio=config.classification_margin,
+        ),
+        "up_down_neutral_centered_region": _neutral_centered_region(
+            positive_score=up_score,
+            negative_score=down_score,
+        ),
     }
 
 
@@ -629,6 +675,85 @@ def _dot4(a: Iterable[float], b: Iterable[float]) -> float:
     av = tuple(float(item) for item in a)
     bv = tuple(float(item) for item in b)
     return av[0] * bv[0] + av[1] * bv[1] + av[2] * bv[2] + av[3] * bv[3]
+
+
+def _score_summary(values: Iterable[float]) -> dict[str, float | int | None]:
+    scores = sorted(float(item) for item in values if math.isfinite(float(item)))
+    if not scores:
+        return {
+            "count": 0,
+            "mean": None,
+            "sd": None,
+            "p05": None,
+            "p50": None,
+            "p95": None,
+            "min": None,
+            "max": None,
+        }
+    mean_value = sum(scores) / len(scores)
+    variance = (
+        sum((item - mean_value) ** 2 for item in scores) / (len(scores) - 1)
+        if len(scores) > 1
+        else 0.0
+    )
+    return {
+        "count": len(scores),
+        "mean": mean_value,
+        "sd": math.sqrt(variance),
+        "p05": _percentile(scores, 5.0),
+        "p50": _percentile(scores, 50.0),
+        "p95": _percentile(scores, 95.0),
+        "min": scores[0],
+        "max": scores[-1],
+    }
+
+
+def _old_neutral_region(
+    *,
+    threshold: float,
+    first_score: float,
+    second_score: float,
+    margin_ratio: float,
+) -> dict[str, float | bool | None]:
+    margin = abs(float(first_score) - float(second_score)) * float(margin_ratio)
+    lower = float(threshold) - margin
+    upper = float(threshold) + margin
+    return {
+        "lower": lower,
+        "upper": upper,
+        "margin": margin,
+        "zero_in_region": lower <= 0.0 <= upper,
+    }
+
+
+def _neutral_centered_region(
+    *,
+    positive_score: float,
+    negative_score: float,
+) -> dict[str, float | bool | None]:
+    positive = float(positive_score)
+    negative = float(negative_score)
+    sanity_passed = positive > 0.0 > negative
+    lower = negative / 2.0 if negative < 0.0 else None
+    upper = positive / 2.0 if positive > 0.0 else None
+    return {
+        "lower": lower,
+        "upper": upper,
+        "zero_in_region": lower is not None and upper is not None and lower <= 0.0 <= upper,
+        "sanity_passed": sanity_passed,
+    }
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        raise ValueError("cannot compute percentile of empty values.")
+    if len(values) == 1:
+        return values[0]
+    position = (len(values) - 1) * float(pct) / 100.0
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    fraction = position - lower
+    return values[lower] * (1.0 - fraction) + values[upper] * fraction
 
 
 def _optional_int(value: Any) -> int | None:

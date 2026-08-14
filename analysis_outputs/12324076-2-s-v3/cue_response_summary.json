@@ -1,0 +1,59 @@
+{
+  "condition_counts": {
+    "dual": 42,
+    "matrix-only": 42
+  },
+  "cue_count": 84,
+  "cue_response_diagnostic_count": 60,
+  "cycle_quality_counts": {
+    "complete": 48,
+    "incomplete_return": 2,
+    "not_applicable": 10,
+    "not_scored": 24
+  },
+  "detector_version": "pilot_v0.2",
+  "event_quality_counts": {
+    "contact:not_scored": 12,
+    "down:clean": 10,
+    "down:contaminated": 2,
+    "left:clean": 10,
+    "left:contaminated": 1,
+    "left:recoverable": 1,
+    "release:not_scored": 12,
+    "right:clean": 12,
+    "slip:clean": 11,
+    "slip:no_pinch_increase": 1,
+    "up:clean": 6,
+    "up:contaminated": 6
+  },
+  "first_excursion_counts": {
+    "down:down": 11,
+    "down:up": 1,
+    "left:left": 12,
+    "right:right": 12,
+    "slip:pinch": 11,
+    "slip:release": 1,
+    "up:down": 1,
+    "up:up": 11
+  },
+  "online_wrist_gate_false_count": 20,
+  "online_wrist_gate_false_offline_neutral_count": 17,
+  "participant_id_missing_count": 84,
+  "quality_counts": {
+    "clean": 49,
+    "contaminated": 9,
+    "no_pinch_increase": 1,
+    "not_scored": 24,
+    "recoverable": 1
+  },
+  "response_quality_counts": {
+    "clean": 49,
+    "contaminated": 9,
+    "no_pinch_increase": 1,
+    "not_scored": 24,
+    "recoverable": 1
+  },
+  "stable_first_excursion_mismatch_count": 10,
+  "up_diagnostic_count": 12,
+  "wrist_audit_count": 48
+}

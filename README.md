@@ -278,6 +278,63 @@ python analyze_cue_cycles.py outputs\你的session目录
 
 `nback_events.csv` 暂时不参与 tactile response detection，只用于后续 dual-task performance 分析。
 
+## Unified Cue Response 分析
+
+新一版离线分析使用统一的 event-level 输出，但保留 wrist/slip 各自的行为指标：
+
+```powershell
+python analyze_cue_response_metrics.py outputs\你的session根目录 --output-dir analysis_outputs\你的输出目录
+```
+
+输出：
+
+- `cue_response_metrics.csv`
+- `wrist_neutral_reclass.csv`
+- `up_diagnostics.csv`
+- `cue_response_diagnostics.csv`
+- `cue_response_summary.json`
+
+当前 detector 版本是 `pilot_v0.2`，只用于 pilot 诊断。正式实验前需要冻结 detector 版本和 `clean / recoverable / contaminated` 规则，不要在正式数据出来后按结果重新调阈值。
+
+当前 S-R mapping：
+
+- `left/right/up/down` 使用 `wrist_rotation_timeseries.csv` 的连续 score 离线重分类。
+- `slip` 使用 `pinch_timeseries.csv` 的 `pinch_distance`，先转成 `pinch_closure = (max_distance - pinch_distance) / (max_distance - min_distance)`。
+- `contact/release` 目前没有定义受试者行为反应，统一输出中标记为 `not_scored`。
+
+统一字段里要区分两类质量：
+
+- `response_quality`：是否检测到可用于 accuracy/RT 的行为反应。
+- `cycle_quality`：完整动作周期是否结束，例如 wrist 是否回到 neutral，slip 是否完成 reopening。
+- `trial_quality` 目前保留为兼容字段，优先看 `response_quality` 和 `cycle_quality`。
+
+RT 字段也要分开使用：
+
+- `first_response_rt_ms`：第一次检测到的行为，可能是错误方向；如果 cue onset 时已经预存动作，则留空。
+- `correct_response_rt_ms`：第一次正确行为出现的时间，正式 RT 统计优先使用这个字段。
+- `was_corrected` / `correction_time_ms`：先错后对时记录纠正。
+- `response_rt_ms` 当前等同于 `correct_response_rt_ms`，作为主 RT 便捷字段。
+
+Wrist 分析：
+
+- 在线分类器的旧 neutral 区间会被记录到 `wrist_neutral_reclass.csv`。
+- 离线候选算法使用 neutral-centered region：以 `score=0` 为标定 neutral，动作边界取 `0` 与动作 mean 的中点。
+- 该算法目前只是候选修正，尚未替换 live gate。
+
+Slip 分析：
+
+- slip onset 使用 semantic slip 的第一行，即 `source_event_name` 为空的 `event_name=slip`；matrix sequence 的后续 step 不作为新的 semantic cue。
+- 第一版观察窗口是当前 slip onset 到下一 semantic cue onset。
+- `pinch_detected` 表示 cue 后相对 pre-cue baseline 出现显著进一步捏合。
+- `release_detected` 表示 peak 后出现显著 reopening。
+- `returned_to_precue_baseline` 只是附加 QC 字段，不决定 slip 是否完成。
+
+`up_diagnostics.csv` 专门检查 `up` cue，包含 pre-cue state、first stable direction、max up score、min down score 和 eventual up detected。当前 pilot 里 `up` 是最需要复查的 cue，不建议继续整体调 wrist detector 来“修”这些行为错误。
+
+`cue_response_diagnostics.csv` 是通用 first-excursion 旁路诊断，不替换 `cue_response_metrics.csv` 的正式判定。它对 `left/right/up/down` 使用对应 wrist score 轴，对 `slip` 使用 `pinch_closure`，记录 cue 后第一次稳定偏离 neutral 的方向、RT、峰值、反向过冲，以及它是否和当前 first stable response 一致。这个文件优先用于解释 `up` 是否存在“小幅正确上抬后快速下冲”的情况。
+
+下一次 pilot 起，`wrist_rotation_calibration.json` 会额外记录 score 分布摘要、旧 neutral 区间、neutral-centered 候选区间和 `score=0` 是否落在旧 neutral 区内。这些字段只增加日志，不改变实时实验行为。
+
 ## 不应修改的边界
 
 除非有明确新需求，不要修改：
@@ -295,5 +352,6 @@ python analyze_cue_cycles.py outputs\你的session目录
 - 你后续写好 3 套 haptic plan 后，需要统一检查每套 plan 的 `plan_id`、`random_seed`、事件顺序、modality、TCP 开关是否和实验条件匹配。
 - 建议保留一套快速 debug plan，把所有 gap 缩短，用来先验证 TCP、日志字段、trial window 和软回正 gate。
 - 如果要把所有 haptic 条件做成正式实验批量入口，可以再新增一个小的条件选择层；当前最小做法仍是每次在 `dualtask_config.yaml` 里切换 `haptic_plan_config`。
-- `analyze_cue_cycles.py` 现在默认 `left/right/up/down` 才有明确正确方向；`slip` 会作为 cue 保留，但暂时没有 expected action，后面需要根据实验定义补 slip 的正确响应规则。
+- `analyze_cue_cycles.py` 是旧版 wrist-only 周期分析；新分析优先使用 `analyze_cue_response_metrics.py`。
 - cue cycle 分析目前是事后脚本，没有写回运行时主流程；如果正式流程需要自动生成分析结果，可以在 session 结束后再接入。
+- 如果要把 calibration 放在受试者最前面并轮流跑多个 session，建议新增 run-level manifest：一次完整 calibration，后续 session 读取同一份 calibration 并做 quick neutral check；manifest 负责检查 config/plan 不重复、记录 session 顺序和派生 seed。

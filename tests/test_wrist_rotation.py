@@ -113,6 +113,34 @@ def test_calibration_classifies_up_down_when_enabled() -> None:
     assert neutral_sample.wrist_up_down_class == "neutral"
 
 
+def test_calibration_logs_score_distribution_and_neutral_regions() -> None:
+    config = WristRotationConfig(
+        min_valid_frames=2,
+        classification_margin=0.15,
+        enable_up_down=True,
+    )
+
+    calibration = calibrate_wrist_rotation(
+        [(1.0, 0.0, 0.0, 0.0), (-1.0, 0.0, 0.0, 0.0)],
+        [_axis_angle_z(20.0), _axis_angle_z(25.0)],
+        [_axis_angle_z(-20.0), _axis_angle_z(-25.0)],
+        up_quaternions=[_axis_angle_x(15.0), _axis_angle_x(16.0)],
+        down_quaternions=[_axis_angle_x(-60.0), _axis_angle_x(-62.0)],
+        config=config,
+    )
+
+    assert calibration.neutral_lr_score_summary["count"] == 2
+    assert calibration.left_lr_score_summary["p50"] is not None
+    assert calibration.lr_old_neutral_region["zero_in_region"] is True
+    assert calibration.lr_neutral_centered_region["sanity_passed"] is True
+    assert calibration.neutral_up_down_score_summary["count"] == 2
+    assert calibration.up_score_summary["p95"] is not None
+    assert calibration.down_score_summary["p05"] is not None
+    assert calibration.up_down_old_neutral_region["zero_in_region"] is False
+    assert calibration.up_down_neutral_centered_region["zero_in_region"] is True
+    assert calibration.up_down_neutral_centered_region["sanity_passed"] is True
+
+
 def test_calibration_fails_when_not_enough_frames() -> None:
     calibration = calibrate_wrist_rotation(
         [(1.0, 0.0, 0.0, 0.0)],
