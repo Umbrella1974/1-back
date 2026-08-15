@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable
 
 from dualtask_logger import DualTaskLogger, make_session_id
@@ -52,6 +55,7 @@ from wrist_rotation import (
     WristRotationCalibrationResult,
     WristRotationConfig,
     calibrate_wrist_rotation,
+    classify_wrist_rotation,
     classify_wrist_rotation_frame,
     extract_wrist_quaternion,
     wrist_rotation_config_from_dict,
@@ -91,6 +95,58 @@ class SessionEndPolicy:
 class HapticFeedbackDisplayConfig:
     mode: str = "none"
     print_on_emit: bool = True
+
+
+@dataclass(frozen=True)
+class CalibrationReuseConfig:
+    enabled: bool = False
+    calibration_in: Path | None = None
+    calibration_out: Path | None = None
+    calibration_id: str = ""
+    quick_check_enabled: bool = True
+    quick_check_duration_s: float = 2.0
+    open_mad_multiplier: float = 6.0
+    wrist_neutral_min_ratio: float = 0.80
+
+
+@dataclass(frozen=True)
+class CalibrationBundle:
+    calibration_id: str
+    path: Path
+    pinch_calibration: PinchCalibrationResult
+    wrist_rotation_calibration: WristRotationCalibrationResult | None = None
+
+
+@dataclass(frozen=True)
+class CalibrationQuickCheckResult:
+    enabled: bool = False
+    passed: bool | None = None
+    reason: str = ""
+    open_valid_frame_count: int = 0
+    open_distance_median: float | None = None
+    open_distance_mad: float | None = None
+    open_distance_delta: float | None = None
+    open_distance_tolerance: float | None = None
+    wrist_checked: bool = False
+    wrist_valid_frame_count: int = 0
+    wrist_neutral_count: int = 0
+    wrist_neutral_ratio: float | None = None
+
+    def to_summary_fields(self) -> dict[str, Any]:
+        return {
+            "calibration_quick_check_enabled": self.enabled,
+            "calibration_quick_check_passed": self.passed,
+            "calibration_quick_check_reason": self.reason,
+            "calibration_quick_check_open_valid_frame_count": self.open_valid_frame_count,
+            "calibration_quick_check_open_distance_median": self.open_distance_median,
+            "calibration_quick_check_open_distance_mad": self.open_distance_mad,
+            "calibration_quick_check_open_distance_delta": self.open_distance_delta,
+            "calibration_quick_check_open_distance_tolerance": self.open_distance_tolerance,
+            "calibration_quick_check_wrist_checked": self.wrist_checked,
+            "calibration_quick_check_wrist_valid_frame_count": self.wrist_valid_frame_count,
+            "calibration_quick_check_wrist_neutral_count": self.wrist_neutral_count,
+            "calibration_quick_check_wrist_neutral_ratio": self.wrist_neutral_ratio,
+        }
 
 
 @dataclass
@@ -507,6 +563,10 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     manus_config = _object_section(config, "manus")
     pinch_config = _object_section(config, "pinch")
     calibration_config_payload = _object_section(config, "calibration")
+    calibration_reuse_config = _calibration_reuse_config_from_dict(
+        config.get("calibration_reuse"),
+        config_path=Path(config_path),
+    )
     haptic_config = _object_section(config, "haptic")
     sync_config = _object_section(config, "sync")
     wrist_rotation_config = wrist_rotation_config_from_dict(config.get("wrist_rotation"))
@@ -628,6 +688,11 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     total_haptic_events = 0
     calibration: PinchCalibrationResult | None = None
     wrist_calibration: WristRotationCalibrationResult | None = None
+    calibration_bundle: CalibrationBundle | None = None
+    calibration_quick_check = CalibrationQuickCheckResult(enabled=False)
+    calibration_loaded_from_bundle = False
+    calibration_saved_path = ""
+    calibration_save_reason = ""
     formal_result: PinchHaptic1BackCoreResult | None = None
     end_reason = ""
     server = _make_manus_tcp_server(manus_config)
@@ -646,44 +711,60 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             log_state=manus_tcp_log_state,
         )
 
-        input("Open hand calibration: press Enter, then keep hand open...")
-        open_samples = _collect_live_samples(
-            server,
-            parser,
-            logger,
-            session_id=session_id,
-            duration_s=calibration_config.open_hand_duration_s,
-            save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
-            tcp_log_state=manus_tcp_log_state,
-        )
-        input("C-shape calibration: press Enter, then keep the task-ready C-shape posture...")
-        contact_samples = _collect_live_samples(
-            server,
-            parser,
-            logger,
-            session_id=session_id,
-            duration_s=calibration_config.contact_hand_duration_s,
-            save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
-            tcp_log_state=manus_tcp_log_state,
-        )
-        input("Pinch calibration: press Enter, then pinch thumb and target finger...")
-        pinch_samples = _collect_live_samples(
-            server,
-            parser,
-            logger,
-            session_id=session_id,
-            duration_s=calibration_config.pinch_hand_duration_s,
-            save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
-            tcp_log_state=manus_tcp_log_state,
-        )
-        calibration = calibrate_from_samples(
-            open_samples,
-            pinch_samples,
-            contact_samples=contact_samples,
-            config=calibration_config,
-            thumb_node_id=pinch_config.get("thumb_node_id", 4),
-            target_finger_node_id=pinch_config.get("target_finger_node_id", 14),
-        )
+        if (
+            calibration_reuse_config.enabled
+            and calibration_reuse_config.calibration_in is not None
+            and calibration_reuse_config.calibration_in.exists()
+        ):
+            calibration_bundle = _load_calibration_bundle(
+                calibration_reuse_config.calibration_in
+            )
+            print(f"[CALIBRATION] loaded {calibration_bundle.calibration_id}")
+            if calibration_reuse_config.quick_check_enabled:
+                calibration_quick_check = _run_live_calibration_quick_check(
+                    server,
+                    parser,
+                    logger,
+                    calibration=calibration_bundle.pinch_calibration,
+                    wrist_calibration=calibration_bundle.wrist_rotation_calibration,
+                    reuse_config=calibration_reuse_config,
+                    wrist_rotation_config=wrist_rotation_config,
+                    session_id=session_id,
+                    save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+                    tcp_log_state=manus_tcp_log_state,
+                    min_valid_frames=calibration_config.min_valid_frames,
+                )
+                if not calibration_quick_check.passed:
+                    warnings.append(
+                        "calibration_quick_check_failed:"
+                        + calibration_quick_check.reason
+                    )
+                    print(
+                        "[CALIBRATION] quick check failed: "
+                        + calibration_quick_check.reason
+                    )
+                    input("Press Enter to run a full calibration and save a new version...")
+                else:
+                    print("[CALIBRATION] quick check passed; reusing loaded calibration.")
+            if (
+                not calibration_reuse_config.quick_check_enabled
+                or calibration_quick_check.passed
+            ):
+                calibration = calibration_bundle.pinch_calibration
+                wrist_calibration = calibration_bundle.wrist_rotation_calibration
+                calibration_loaded_from_bundle = True
+
+        if calibration is None:
+            calibration = _run_live_pinch_calibration(
+                server,
+                parser,
+                logger,
+                calibration_config=calibration_config,
+                pinch_config=pinch_config,
+                manus_config=manus_config,
+                session_id=session_id,
+                tcp_log_state=manus_tcp_log_state,
+            )
         logger.write_calibration(calibration)
         print(f"Calibration threshold_a={calibration.threshold_a:.6f}")
         if not _should_enter_formal_phase(calibration):
@@ -696,7 +777,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             )
             return logger.session_dir
 
-        if wrist_rotation_config.enabled:
+        if wrist_rotation_config.enabled and wrist_calibration is None:
             wrist_calibration = _run_live_wrist_rotation_calibration(
                 server,
                 logger,
@@ -705,7 +786,10 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
                 tcp_log_state=manus_tcp_log_state,
             )
+        if wrist_rotation_config.enabled and wrist_calibration is not None:
             logger.write_wrist_rotation_calibration(wrist_calibration)
+            if calibration_loaded_from_bundle:
+                print(f"[WRIST] loaded calibration: passed={wrist_calibration.calibration_passed}")
             if not wrist_calibration.calibration_passed:
                 warnings.append(
                     "wrist_rotation_calibration_failed:"
@@ -718,6 +802,22 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                     )
         else:
             print("[WRIST] calibration disabled")
+
+        if calibration_reuse_config.enabled and not calibration_loaded_from_bundle:
+            saved_path = _save_calibration_bundle(
+                calibration,
+                wrist_calibration,
+                reuse_config=calibration_reuse_config,
+                fallback_base_path=calibration_reuse_config.calibration_in,
+            )
+            calibration_saved_path = str(saved_path) if saved_path is not None else ""
+            calibration_save_reason = (
+                "new_version_after_quick_check_failure"
+                if calibration_bundle is not None
+                else "initial_full_calibration"
+            )
+            if saved_path is not None:
+                print(f"[CALIBRATION] saved {saved_path}")
 
         if nback_enabled:
             if nback_timeline is None:
@@ -782,6 +882,19 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "haptic_plan_template_random_seed": haptic_plan_template_random_seed,
                 "haptic_plan_random_seed": plan.random_seed,
                 **seed_info.to_dict(),
+                "calibration_reuse_enabled": calibration_reuse_config.enabled,
+                "calibration_loaded_from_bundle": calibration_loaded_from_bundle,
+                "calibration_bundle_path": (
+                    str(calibration_bundle.path) if calibration_bundle is not None else ""
+                ),
+                "calibration_id": _active_calibration_id(
+                    calibration_bundle=calibration_bundle,
+                    reuse_config=calibration_reuse_config,
+                    saved_path=calibration_saved_path,
+                    loaded=calibration_loaded_from_bundle,
+                ),
+                "calibration_saved_path": calibration_saved_path,
+                "calibration_save_reason": calibration_save_reason,
                 "start_wall_time_iso": start_wall,
                 "end_wall_time_iso": end_wall,
                 "output_files": logger.paths.to_dict(),
@@ -833,6 +946,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "errors": errors,
         }
         summary.update(_calibration_summary_fields(calibration))
+        summary.update(calibration_quick_check.to_summary_fields())
         summary.update(_zone_summary_fields(formal_result))
         summary.update(_haptic_end_summary_fields(formal_result, session_end_policy, end_reason))
         warnings.extend(_haptic_policy_warnings_from_result(formal_result))
@@ -852,6 +966,383 @@ def main() -> int:
     args = parser.parse_args()
     run_live_pinch_haptic_1back(args.config)
     return 0
+
+
+def _run_live_pinch_calibration(
+    server: LiveRawStreamServer,
+    parser: ManusOnlyPinchInput,
+    logger: DualTaskLogger,
+    *,
+    calibration_config: PinchCalibrationConfig,
+    pinch_config: dict[str, Any],
+    manus_config: dict[str, Any],
+    session_id: str,
+    tcp_log_state: ManusTcpLogState | None,
+) -> PinchCalibrationResult:
+    input("Open hand calibration: press Enter, then keep hand open...")
+    open_samples = _collect_live_samples(
+        server,
+        parser,
+        logger,
+        session_id=session_id,
+        duration_s=calibration_config.open_hand_duration_s,
+        save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+        tcp_log_state=tcp_log_state,
+    )
+    input("C-shape calibration: press Enter, then keep the task-ready C-shape posture...")
+    contact_samples = _collect_live_samples(
+        server,
+        parser,
+        logger,
+        session_id=session_id,
+        duration_s=calibration_config.contact_hand_duration_s,
+        save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+        tcp_log_state=tcp_log_state,
+    )
+    input("Pinch calibration: press Enter, then pinch thumb and target finger...")
+    pinch_samples = _collect_live_samples(
+        server,
+        parser,
+        logger,
+        session_id=session_id,
+        duration_s=calibration_config.pinch_hand_duration_s,
+        save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
+        tcp_log_state=tcp_log_state,
+    )
+    return calibrate_from_samples(
+        open_samples,
+        pinch_samples,
+        contact_samples=contact_samples,
+        config=calibration_config,
+        thumb_node_id=pinch_config.get("thumb_node_id", 4),
+        target_finger_node_id=pinch_config.get("target_finger_node_id", 14),
+    )
+
+
+def _calibration_reuse_config_from_dict(
+    payload: Any,
+    *,
+    config_path: Path,
+) -> CalibrationReuseConfig:
+    value = payload or {}
+    if not isinstance(value, dict):
+        raise ValueError("calibration_reuse section must be an object.")
+    enabled = _bool_config_value(value.get("enabled", False), "calibration_reuse.enabled")
+    base_dir = Path(config_path).resolve().parent
+    calibration_in = _optional_config_path(value.get("calibration_in"), base_dir=base_dir)
+    calibration_out = _optional_config_path(value.get("calibration_out"), base_dir=base_dir)
+    if enabled and calibration_in is None and calibration_out is None:
+        raise ValueError(
+            "calibration_reuse.enabled requires calibration_in or calibration_out."
+        )
+    return CalibrationReuseConfig(
+        enabled=enabled,
+        calibration_in=calibration_in,
+        calibration_out=calibration_out,
+        calibration_id=str(value.get("calibration_id", "") or ""),
+        quick_check_enabled=_bool_config_value(
+            value.get("quick_check_enabled", True),
+            "calibration_reuse.quick_check_enabled",
+        ),
+        quick_check_duration_s=_positive_config_float(
+            value.get("quick_check_duration_s", 2.0),
+            "calibration_reuse.quick_check_duration_s",
+        ),
+        open_mad_multiplier=_positive_config_float(
+            value.get("open_mad_multiplier", 6.0),
+            "calibration_reuse.open_mad_multiplier",
+        ),
+        wrist_neutral_min_ratio=_ratio_config_float(
+            value.get("wrist_neutral_min_ratio", 0.80),
+            "calibration_reuse.wrist_neutral_min_ratio",
+        ),
+    )
+
+
+def _optional_config_path(value: Any, *, base_dir: Path) -> Path | None:
+    if value is None or str(value).strip() == "":
+        return None
+    path = Path(str(value))
+    return path if path.is_absolute() else base_dir / path
+
+
+def _load_calibration_bundle(path: Path) -> CalibrationBundle:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("calibration bundle must be a JSON object.")
+    pinch_payload = payload.get("pinch_calibration")
+    if pinch_payload is None and "min_distance" in payload:
+        pinch_payload = payload
+    if not isinstance(pinch_payload, dict):
+        raise ValueError("calibration bundle missing pinch_calibration.")
+    wrist_payload = payload.get("wrist_rotation_calibration")
+    return CalibrationBundle(
+        calibration_id=str(payload.get("calibration_id") or path.stem),
+        path=path,
+        pinch_calibration=_dataclass_from_dict(PinchCalibrationResult, pinch_payload),
+        wrist_rotation_calibration=(
+            _dataclass_from_dict(WristRotationCalibrationResult, wrist_payload)
+            if isinstance(wrist_payload, dict)
+            else None
+        ),
+    )
+
+
+def _save_calibration_bundle(
+    calibration: PinchCalibrationResult,
+    wrist_calibration: WristRotationCalibrationResult | None,
+    *,
+    reuse_config: CalibrationReuseConfig,
+    fallback_base_path: Path | None,
+) -> Path | None:
+    target = reuse_config.calibration_out or fallback_base_path
+    if target is None:
+        return None
+    requested_target = target
+    target = _next_calibration_version_path(target)
+    calibration_id = (
+        target.stem
+        if target != requested_target
+        else reuse_config.calibration_id or target.stem
+    )
+    payload = {
+        "format_version": 1,
+        "calibration_id": calibration_id,
+        "created_wall_time_iso": _now_iso(),
+        "pinch_calibration": calibration.to_dict(),
+        "wrist_rotation_calibration": (
+            wrist_calibration.to_dict() if wrist_calibration is not None else None
+        ),
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return target
+
+
+def _next_calibration_version_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix or ".json"
+    marker = "_v"
+    prefix = stem
+    start_version = 2
+    if marker in stem:
+        prefix_candidate, version_text = stem.rsplit(marker, 1)
+        if version_text.isdigit():
+            prefix = prefix_candidate
+            start_version = int(version_text) + 1
+    for version in range(start_version, 1000):
+        candidate = path.with_name(f"{prefix}_v{version:02d}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"could not find free calibration version for {path}")
+
+
+def _run_live_calibration_quick_check(
+    server: LiveRawStreamServer,
+    parser: ManusOnlyPinchInput,
+    logger: DualTaskLogger,
+    *,
+    calibration: PinchCalibrationResult,
+    wrist_calibration: WristRotationCalibrationResult | None,
+    reuse_config: CalibrationReuseConfig,
+    wrist_rotation_config: WristRotationConfig,
+    session_id: str,
+    save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None,
+    min_valid_frames: int,
+) -> CalibrationQuickCheckResult:
+    input("Calibration quick check: press Enter, then keep hand open and wrist neutral...")
+    open_samples = _collect_live_samples(
+        server,
+        parser,
+        logger,
+        session_id=session_id,
+        duration_s=reuse_config.quick_check_duration_s,
+        save_raw_frames=save_raw_frames,
+        tcp_log_state=tcp_log_state,
+    )
+    pinch_result = _pinch_open_quick_check_from_samples(
+        open_samples,
+        calibration=calibration,
+        min_valid_frames=min_valid_frames,
+        open_mad_multiplier=reuse_config.open_mad_multiplier,
+    )
+    if not pinch_result.passed:
+        return pinch_result
+    if not wrist_rotation_config.enabled:
+        return pinch_result
+    if wrist_calibration is None or not wrist_calibration.calibration_passed:
+        return replace(
+            pinch_result,
+            passed=False,
+            reason="missing_or_failed_wrist_calibration_in_bundle",
+            wrist_checked=True,
+        )
+    quaternions = _collect_live_wrist_quaternions(
+        server,
+        logger,
+        config=wrist_rotation_config,
+        duration_s=reuse_config.quick_check_duration_s,
+        save_raw_frames=save_raw_frames,
+        tcp_log_state=tcp_log_state,
+    )
+    wrist_result = _wrist_neutral_quick_check_from_quaternions(
+        quaternions,
+        calibration=wrist_calibration,
+        min_valid_frames=wrist_rotation_config.min_valid_frames,
+        min_neutral_ratio=reuse_config.wrist_neutral_min_ratio,
+    )
+    return replace(
+        pinch_result,
+        passed=pinch_result.passed and wrist_result["passed"],
+        reason=wrist_result["reason"],
+        wrist_checked=True,
+        wrist_valid_frame_count=wrist_result["valid_count"],
+        wrist_neutral_count=wrist_result["neutral_count"],
+        wrist_neutral_ratio=wrist_result["neutral_ratio"],
+    )
+
+
+def _pinch_open_quick_check_from_samples(
+    samples: Iterable[Any],
+    *,
+    calibration: PinchCalibrationResult,
+    min_valid_frames: int,
+    open_mad_multiplier: float,
+) -> CalibrationQuickCheckResult:
+    distances = _valid_pinch_distances(samples)
+    if len(distances) < int(min_valid_frames):
+        return CalibrationQuickCheckResult(
+            enabled=True,
+            passed=False,
+            reason="not_enough_valid_open_quick_check_frames",
+            open_valid_frame_count=len(distances),
+        )
+    reference_median = calibration.open_distance_median
+    reference_mad = calibration.open_distance_mad
+    if reference_median is None or reference_mad is None or float(reference_mad) <= 0.0:
+        return CalibrationQuickCheckResult(
+            enabled=True,
+            passed=False,
+            reason="missing_open_reference_mad",
+            open_valid_frame_count=len(distances),
+        )
+    current_median = median(distances)
+    current_mad = median([abs(value - current_median) for value in distances])
+    tolerance = float(reference_mad) * float(open_mad_multiplier)
+    delta = abs(float(current_median) - float(reference_median))
+    reason = ""
+    if delta > tolerance:
+        reason = "open_distance_shifted_from_reference"
+    elif current_mad > tolerance:
+        reason = "open_distance_unstable"
+    return CalibrationQuickCheckResult(
+        enabled=True,
+        passed=not reason,
+        reason=reason,
+        open_valid_frame_count=len(distances),
+        open_distance_median=float(current_median),
+        open_distance_mad=float(current_mad),
+        open_distance_delta=float(delta),
+        open_distance_tolerance=float(tolerance),
+    )
+
+
+def _wrist_neutral_quick_check_from_quaternions(
+    quaternions: Iterable[Any],
+    *,
+    calibration: WristRotationCalibrationResult,
+    min_valid_frames: int,
+    min_neutral_ratio: float,
+) -> dict[str, Any]:
+    valid_count = 0
+    neutral_count = 0
+    for q in quaternions:
+        sample = classify_wrist_rotation(q, calibration)
+        lr_neutral = (
+            sample.wrist_rotation_valid
+            and sample.wrist_rotation_class == "neutral"
+        )
+        ud_required = bool(calibration.up_down_calibration_passed)
+        ud_neutral = (
+            not ud_required
+            or (
+                sample.wrist_up_down_valid
+                and sample.wrist_up_down_class == "neutral"
+            )
+        )
+        if sample.wrist_rotation_valid:
+            valid_count += 1
+        if lr_neutral and ud_neutral:
+            neutral_count += 1
+    ratio = neutral_count / valid_count if valid_count > 0 else None
+    reason = ""
+    if valid_count < int(min_valid_frames):
+        reason = "not_enough_valid_wrist_quick_check_frames"
+    elif ratio is None or ratio < float(min_neutral_ratio):
+        reason = "wrist_not_neutral_enough_for_saved_calibration"
+    return {
+        "passed": not reason,
+        "reason": reason,
+        "valid_count": valid_count,
+        "neutral_count": neutral_count,
+        "neutral_ratio": ratio,
+    }
+
+
+def _valid_pinch_distances(samples: Iterable[Any]) -> list[float]:
+    distances: list[float] = []
+    for sample in samples:
+        if not bool(getattr(sample, "pinch_valid", False)):
+            continue
+        value = getattr(sample, "pinch_distance", None)
+        try:
+            distance = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(distance) and distance > 0.0:
+            distances.append(distance)
+    return distances
+
+
+def _dataclass_from_dict(cls: Any, payload: dict[str, Any]) -> Any:
+    allowed = {item.name for item in fields(cls)}
+    return cls(**{key: value for key, value in payload.items() if key in allowed})
+
+
+def _active_calibration_id(
+    *,
+    calibration_bundle: CalibrationBundle | None,
+    reuse_config: CalibrationReuseConfig,
+    saved_path: str,
+    loaded: bool,
+) -> str:
+    if loaded and calibration_bundle is not None:
+        return calibration_bundle.calibration_id
+    if saved_path:
+        return Path(saved_path).stem
+    if reuse_config.calibration_id:
+        return reuse_config.calibration_id
+    return ""
+
+
+def _positive_config_float(value: Any, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be positive.") from exc
+    if not math.isfinite(result) or result <= 0.0:
+        raise ValueError(f"{name} must be positive.")
+    return result
+
+
+def _ratio_config_float(value: Any, name: str) -> float:
+    result = _positive_config_float(value, name)
+    if result > 1.0:
+        raise ValueError(f"{name} must be between 0 and 1.")
+    return result
 
 
 def _run_live_wrist_rotation_calibration(

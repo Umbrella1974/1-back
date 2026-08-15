@@ -378,6 +378,33 @@ Pinch 三状态 reference：
 
 下一次 pilot 起，`wrist_rotation_calibration.json` 会额外记录 score 分布摘要、旧 neutral 区间、neutral-centered 候选区间和 `score=0` 是否落在旧 neutral 区内。这些字段只增加日志，不改变实时实验行为。
 
+Calibration reuse：
+
+默认行为不变：如果 YAML 里没有 `calibration_reuse`，每个 session 都会完整采集 Open / C-shape / Pinch，以及启用时的 wrist neutral / left / right / up / down calibration。
+
+如果要让同一个受试者后续 session 复用同一份 calibration，可以在当前运行的 config 里加：
+
+```yaml
+calibration_reuse:
+  enabled: true
+  calibration_in: calibrations/P001_exp2_cal_v01.json
+  calibration_out: calibrations/P001_exp2_cal_v01.json
+  calibration_id: P001_exp2_cal_v01
+  quick_check_enabled: true
+  quick_check_duration_s: 2.0
+  open_mad_multiplier: 6.0
+  wrist_neutral_min_ratio: 0.80
+```
+
+- 如果 `calibration_in` 存在，程序先读取这份 calibration bundle。
+- 如果 `quick_check_enabled=true`，正式任务前会要求保持 open hand + neutral wrist。
+- quick check 只检查旧 calibration 是否仍可用：open pinch distance 是否接近旧 Open reference、open 信号是否稳定、启用 wrist 时 wrist 是否大多数仍被旧 calibration 判为 neutral。
+- quick check 通过时，不重新标定；当前 session 仍会写自己的 `calibration.json` / `wrist_rotation_calibration.json`，内容来自复用的 bundle。
+- quick check 失败时，程序要求完整重标；新 calibration 不覆盖旧文件，而是保存成下一版，例如 `P001_exp2_cal_v02.json`。
+- `summary.json` 会记录 `calibration_id`、`calibration_loaded_from_bundle`、`calibration_bundle_path`、`calibration_saved_path` 和 quick check 的距离/腕部检查字段。
+
+第一版 quick check 没有固定 Open/C/Pinch 的人为百分比阈值；open 检查使用旧 Open reference 的 MAD 倍数。`open_mad_multiplier` 和 `wrist_neutral_min_ratio` 目前是 config 参数，下一批 pilot 后再根据真实漂移分布决定是否调整。
+
 ## 不应修改的边界
 
 除非有明确新需求，不要修改：
@@ -397,4 +424,4 @@ Pinch 三状态 reference：
 - 如果要把所有 haptic 条件做成正式实验批量入口，可以再新增一个小的条件选择层；当前最小做法仍是每次在 `dualtask_config.yaml` 里切换 `haptic_plan_config`。
 - `analyze_cue_cycles.py` 是旧版 wrist-only 周期分析；新分析优先使用 `analyze_cue_response_metrics.py`。
 - cue cycle 分析目前是事后脚本，没有写回运行时主流程；如果正式流程需要自动生成分析结果，可以在 session 结束后再接入。
-- 如果要把 calibration 放在受试者最前面并轮流跑多个 session，建议新增 run-level manifest：一次完整 calibration，后续 session 读取同一份 calibration 并做 quick neutral check；manifest 负责检查 config/plan 不重复、记录 session 顺序和派生 seed。
+- 如果要把 calibration 放在受试者最前面并轮流跑多个 session，下一步应新增 run-level manifest：一次完整 calibration，后续 session 读取同一份 calibration 并做 quick check；manifest 负责检查 config/plan 不重复、记录 session 顺序和派生 seed。当前已完成 calibration reuse 底层能力，但还没有 participant-level 顺序执行器。
