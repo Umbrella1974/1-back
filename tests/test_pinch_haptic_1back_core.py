@@ -18,10 +18,12 @@ from run_pinch_haptic_1back import (
     _append_no_haptic_event_warnings,
     _bool_config_value,
     _calibration_summary_fields,
+    _final_summary_end_reason,
     _prompt_enter_or_abort,
     _pygame_key_constant,
     _session_end_policy_for_task,
     _session_end_policy_from_config,
+    _should_append_no_haptic_event_warnings,
     _should_enter_formal_phase,
     _zone_summary_fields,
     run_pinch_haptic_1back_core,
@@ -242,6 +244,11 @@ def test_no_haptic_warning_explains_open_zone_too_short(tmp_path) -> None:
         "open_zone segments were shorter than contact onset delay; contact could not trigger."
         in warnings
     )
+
+
+def test_pre_formal_exit_sets_clear_reason_and_skips_no_haptic_warning() -> None:
+    assert _final_summary_end_reason("", None) == "formal_not_started"
+    assert _should_append_no_haptic_event_warnings(None, 0) is False
 
 
 def _calibration() -> PinchCalibrationResult:

@@ -893,6 +893,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         sender.write_csv(logger.paths.haptic_events_csv)
         logger.write_nback_events([])
         end_wall = _now_iso()
+        end_reason = _final_summary_end_reason(end_reason, formal_result)
         summary = {
                 "session_id": session_id,
                 "participant_id": session_config.get("participant_id", ""),
@@ -976,7 +977,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         summary.update(_zone_summary_fields(formal_result))
         summary.update(_haptic_end_summary_fields(formal_result, session_end_policy, end_reason))
         warnings.extend(_haptic_policy_warnings_from_result(formal_result))
-        if len(sender.records) == 0:
+        if _should_append_no_haptic_event_warnings(formal_result, len(sender.records)):
             _append_no_haptic_event_warnings(warnings, summary, plan)
         if summary.get("interrupted_haptic_trial"):
             warnings.append("haptic_sequence_interrupted")
@@ -2288,6 +2289,24 @@ def _haptic_end_summary_fields(
         "trial_gate_enabled": result.trial_gate_enabled,
         "digit_guard_enabled": result.digit_guard_enabled,
     }
+
+
+def _final_summary_end_reason(
+    end_reason: str,
+    formal_result: PinchHaptic1BackCoreResult | None,
+) -> str:
+    if str(end_reason):
+        return str(end_reason)
+    if formal_result is None:
+        return "formal_not_started"
+    return str(formal_result.end_reason or "")
+
+
+def _should_append_no_haptic_event_warnings(
+    formal_result: PinchHaptic1BackCoreResult | None,
+    sender_record_count: int,
+) -> bool:
+    return formal_result is not None and int(sender_record_count) == 0
 
 
 def _list_or_none(value: tuple[int, int] | None) -> list[int] | None:

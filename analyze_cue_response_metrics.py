@@ -1905,7 +1905,11 @@ def _semantic_haptic_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 def _is_analyzable_session(summary: dict[str, Any], semantic_haptics: list[dict[str, str]]) -> bool:
     plan_id = _text(summary.get("haptic_plan_id"))
     return (
-        (plan_id.startswith("dual-") or plan_id.startswith("only-matrix-"))
+        (
+            plan_id.startswith("dual-")
+            or plan_id.startswith("only-matrix-")
+            or plan_id.startswith("only-motor-")
+        )
         and len(semantic_haptics) >= 7
     )
 
