@@ -733,7 +733,25 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 calibration_reuse_config.calibration_in
             )
             print(f"[CALIBRATION] loaded {calibration_bundle.calibration_id}")
-            if calibration_reuse_config.quick_check_enabled:
+            reuse_block_reason = _calibration_reuse_block_reason(
+                calibration_bundle.pinch_calibration
+            )
+            if reuse_block_reason:
+                calibration_quick_check = replace(
+                    calibration_quick_check,
+                    enabled=calibration_reuse_config.quick_check_enabled,
+                    passed=False,
+                    reason=reuse_block_reason,
+                )
+                warnings.append("calibration_reuse_blocked:" + reuse_block_reason)
+                print(
+                    "[CALIBRATION] loaded calibration cannot be reused: "
+                    + reuse_block_reason
+                )
+                _prompt_enter_or_abort(
+                    "Press Enter to run a full calibration and save a new version..."
+                )
+            elif calibration_reuse_config.quick_check_enabled:
                 calibration_quick_check = _run_live_calibration_quick_check(
                     server,
                     parser,
@@ -763,8 +781,11 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 else:
                     print("[CALIBRATION] quick check passed; reusing loaded calibration.")
             if (
-                not calibration_reuse_config.quick_check_enabled
-                or calibration_quick_check.passed
+                not reuse_block_reason
+                and (
+                    not calibration_reuse_config.quick_check_enabled
+                    or calibration_quick_check.passed
+                )
             ):
                 calibration = calibration_bundle.pinch_calibration
                 wrist_calibration = calibration_bundle.wrist_rotation_calibration
@@ -2202,6 +2223,18 @@ def _calibration_summary_fields(
 
 def _should_enter_formal_phase(calibration: PinchCalibrationResult) -> bool:
     return bool(calibration.calibration_passed)
+
+
+def _calibration_reuse_block_reason(calibration: PinchCalibrationResult) -> str:
+    if not bool(getattr(calibration, "calibration_passed", False)):
+        reason = str(getattr(calibration, "calibration_failure_reason", "") or "")
+        return "loaded_calibration_failed" + (f":{reason}" if reason else "")
+    if not bool(getattr(calibration, "pinch_reference_quality_passed", False)):
+        reason = str(getattr(calibration, "pinch_reference_quality_reason", "") or "")
+        return "loaded_pinch_reference_quality_failed" + (
+            f":{reason}" if reason else ""
+        )
+    return ""
 
 
 def _zone_summary_fields(

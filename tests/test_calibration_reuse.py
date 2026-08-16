@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from pinch_calibration import PinchCalibrationConfig, calibrate_from_samples
 from run_pinch_haptic_1back import (
     CalibrationReuseConfig,
+    _calibration_reuse_block_reason,
     _load_calibration_bundle,
     _next_calibration_version_path,
     _pinch_open_quick_check_from_samples,
@@ -94,6 +96,34 @@ def test_pinch_open_quick_check_fails_when_open_distance_shifts() -> None:
 
     assert result.passed is False
     assert result.reason == "open_distance_shifted_from_reference"
+
+
+def test_calibration_reuse_allows_good_reference_quality() -> None:
+    assert _calibration_reuse_block_reason(_calibration()) == ""
+
+
+def test_calibration_reuse_blocks_bad_reference_quality() -> None:
+    calibration = replace(
+        _calibration(),
+        pinch_reference_quality_passed=False,
+        pinch_reference_quality_reason="reference_overlap",
+    )
+
+    reason = _calibration_reuse_block_reason(calibration)
+
+    assert reason == "loaded_pinch_reference_quality_failed:reference_overlap"
+
+
+def test_calibration_reuse_blocks_failed_calibration() -> None:
+    calibration = replace(
+        _calibration(),
+        calibration_passed=False,
+        calibration_failure_reason="not_enough_valid_frames",
+    )
+
+    reason = _calibration_reuse_block_reason(calibration)
+
+    assert reason == "loaded_calibration_failed:not_enough_valid_frames"
 
 
 def _calibration():

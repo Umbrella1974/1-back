@@ -429,6 +429,7 @@ calibration_reuse:
 - quick check 只检查旧 calibration 是否仍可用：open pinch distance 是否接近旧 Open reference、open 信号是否稳定、启用 wrist 时 wrist 是否大多数仍被旧 calibration 判为 neutral。
 - quick check 通过时，不重新标定；当前 session 仍会写自己的 `calibration.json` / `wrist_rotation_calibration.json`，内容来自复用的 bundle。
 - quick check 失败时，程序要求完整重标；新 calibration 不覆盖旧文件，而是保存成下一版，例如 `P001_exp2_cal_v02.json`。
+- 如果旧 bundle 里的 `calibration_passed=false` 或 `pinch_reference_quality_passed=false`，程序不会复用它，即使 quick check 配置关闭也会要求完整重标。
 - `summary.json` 会记录 `calibration_id`、`calibration_loaded_from_bundle`、`calibration_bundle_path`、`calibration_saved_path` 和 quick check 的距离/腕部检查字段。
 
 第一版 quick check 没有固定 Open/C/Pinch 的人为百分比阈值；open 检查使用旧 Open reference 的 MAD 倍数。`open_mad_multiplier` 和 `wrist_neutral_min_ratio` 目前是 config 参数，下一批 pilot 后再根据真实漂移分布决定是否调整。
