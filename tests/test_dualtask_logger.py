@@ -55,7 +55,11 @@ def test_dualtask_logger_writes_pinch_timeseries_csv(tmp_path) -> None:
         zone="open_zone",
         queue_depth=12,
         queue_depth_at_phase_start=20,
+        queue_depth_before_flush=30,
+        flushed_count=30,
+        first_frame_index_after_flush=31,
         latest_received_frame_index=99,
+        frame_age_ms=4.5,
     )
 
     with logger.paths.pinch_timeseries_csv.open(newline="", encoding="utf-8") as handle:
@@ -66,7 +70,11 @@ def test_dualtask_logger_writes_pinch_timeseries_csv(tmp_path) -> None:
     assert rows[0]["threshold_a"] == "0.055"
     assert rows[0]["queue_depth"] == "12"
     assert rows[0]["queue_depth_at_phase_start"] == "20"
+    assert rows[0]["queue_depth_before_flush"] == "30"
+    assert rows[0]["flushed_count"] == "30"
+    assert rows[0]["first_frame_index_after_flush"] == "31"
     assert rows[0]["latest_received_frame_index"] == "99"
+    assert rows[0]["frame_age_ms"] == "4.5"
     assert logger.total_pinch_samples == 1
     assert logger.total_valid_pinch_samples == 1
 
@@ -94,7 +102,11 @@ def test_dualtask_logger_writes_calibration_timeseries_csv(tmp_path) -> None:
         phase="open",
         queue_depth=7,
         queue_depth_at_phase_start=30,
+        queue_depth_before_flush=40,
+        flushed_count=40,
+        first_frame_index_after_flush=41,
         latest_received_frame_index=101,
+        frame_age_ms=5.5,
     )
 
     with logger.paths.calibration_timeseries_csv.open(newline="", encoding="utf-8") as handle:
@@ -104,7 +116,11 @@ def test_dualtask_logger_writes_calibration_timeseries_csv(tmp_path) -> None:
     assert rows[0]["pinch_distance"] == "0.08"
     assert rows[0]["queue_depth"] == "7"
     assert rows[0]["queue_depth_at_phase_start"] == "30"
+    assert rows[0]["queue_depth_before_flush"] == "40"
+    assert rows[0]["flushed_count"] == "40"
+    assert rows[0]["first_frame_index_after_flush"] == "41"
     assert rows[0]["latest_received_frame_index"] == "101"
+    assert rows[0]["frame_age_ms"] == "5.5"
 
 
 def test_dualtask_logger_writes_calibration_and_summary_json(tmp_path) -> None:

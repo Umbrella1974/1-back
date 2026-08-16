@@ -30,7 +30,11 @@ PINCH_TIMESERIES_FIELDS = [
     "tracker_present",
     "queue_depth",
     "queue_depth_at_phase_start",
+    "queue_depth_before_flush",
+    "flushed_count",
+    "first_frame_index_after_flush",
     "latest_received_frame_index",
+    "frame_age_ms",
     "note",
 ]
 
@@ -51,7 +55,11 @@ CALIBRATION_TIMESERIES_FIELDS = [
     "tracker_present",
     "queue_depth",
     "queue_depth_at_phase_start",
+    "queue_depth_before_flush",
+    "flushed_count",
+    "first_frame_index_after_flush",
     "latest_received_frame_index",
+    "frame_age_ms",
     "note",
 ]
 
@@ -164,7 +172,11 @@ class DualTaskLogger:
         phase: str = "formal",
         queue_depth: int | None = None,
         queue_depth_at_phase_start: int | None = None,
+        queue_depth_before_flush: int | None = None,
+        flushed_count: int | None = None,
+        first_frame_index_after_flush: int | None = None,
         latest_received_frame_index: int | None = None,
+        frame_age_ms: float | None = None,
     ) -> None:
         """Append one pinch sample row aligned to the active calibration."""
 
@@ -188,7 +200,11 @@ class DualTaskLogger:
             "tracker_present": getattr(sample, "tracker_present", False),
             "queue_depth": queue_depth,
             "queue_depth_at_phase_start": queue_depth_at_phase_start,
+            "queue_depth_before_flush": queue_depth_before_flush,
+            "flushed_count": flushed_count,
+            "first_frame_index_after_flush": first_frame_index_after_flush,
             "latest_received_frame_index": latest_received_frame_index,
+            "frame_age_ms": frame_age_ms,
             "note": getattr(sample, "note", ""),
         }
         mode = "a" if self._pinch_header_written else "w"
@@ -209,7 +225,11 @@ class DualTaskLogger:
         phase: str,
         queue_depth: int | None = None,
         queue_depth_at_phase_start: int | None = None,
+        queue_depth_before_flush: int | None = None,
+        flushed_count: int | None = None,
+        first_frame_index_after_flush: int | None = None,
         latest_received_frame_index: int | None = None,
+        frame_age_ms: float | None = None,
     ) -> None:
         """Append one calibration-phase pinch sample row."""
 
@@ -229,7 +249,11 @@ class DualTaskLogger:
             "tracker_present": getattr(sample, "tracker_present", False),
             "queue_depth": queue_depth,
             "queue_depth_at_phase_start": queue_depth_at_phase_start,
+            "queue_depth_before_flush": queue_depth_before_flush,
+            "flushed_count": flushed_count,
+            "first_frame_index_after_flush": first_frame_index_after_flush,
             "latest_received_frame_index": latest_received_frame_index,
+            "frame_age_ms": frame_age_ms,
             "note": getattr(sample, "note", ""),
         }
         mode = "a" if self._calibration_header_written else "w"

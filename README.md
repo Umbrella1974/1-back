@@ -238,7 +238,11 @@ wrist_rotation:
 - `calibration_timeseries.csv`
   - `queue_depth`
   - `queue_depth_at_phase_start`
+  - `queue_depth_before_flush`
+  - `flushed_count`
+  - `first_frame_index_after_flush`
   - `latest_received_frame_index`
+  - `frame_age_ms`
 - `summary.json`
 - 如果启用 wrist rotation：
   - `wrist_rotation_calibration.json`
@@ -250,9 +254,10 @@ wrist_rotation:
 - `summary.json` 的 `end_reason`
 - `summary.json` 的 `session_seed`、`haptic_seed`、`nback_seed`、`haptic_plan_id` 和 `haptic_plan_random_seed`
 - `summary.json` 的 wrist rotation 字段
+- `summary.json` 的 `manus_queue_flush_events`
 - `nback_events.csv` 是否符合 post-release 期间的预期行为
 - `calibration_timeseries.csv` 是否显示 Open / C-shape / Pinch 某一段存在跳变或过渡帧
-- `calibration_timeseries.csv` 和 `pinch_timeseries.csv` 的 `queue_depth` 是否在 phase/formal 开始时明显积压
+- `calibration_timeseries.csv` 和 `pinch_timeseries.csv` 的 flush/queue/frame age 字段是否显示旧帧污染
 
 `haptic_events.csv` 新增了用于事后排查调度的字段：
 
@@ -275,8 +280,18 @@ wrist_rotation:
 
 - `phase`：正式任务中为 `formal`。
 - `queue_depth`：读取当前 frame 前 Python MANUS queue 中等待的 frame 数。
-- `queue_depth_at_phase_start`：formal loop 开始时的 queue 深度。
+- `queue_depth_at_phase_start`：phase/formal flush 之后、开始读取前的 queue 深度。
+- `queue_depth_before_flush`：本 phase/formal 重新开始前，队列里积压的旧 frame 数。
+- `flushed_count`：本 phase/formal 开始前实际清掉的 frame 数。
+- `first_frame_index_after_flush`：flush 后第一次被当前 phase/formal 消费的 frame index。
 - `latest_received_frame_index`：读取当前 frame 前 Python 接收线程已经收到的最新 frame index。
+- `frame_age_ms`：当前 frame 从 TCP callback 收到，到正式被当前消费者处理之间的延迟。
+
+`summary.json` 额外记录 `manus_queue_flush_events`，按顺序列出 quick check、pinch calibration、wrist calibration、formal start 前的 flush 情况。formal loop 暂时仍然使用 FIFO；下一次 pilot 后先看 `pinch_timeseries.csv`：
+
+- 如果 formal 期间 `queue_depth` 基本在 0-1、`frame_age_ms` 很低，保留 FIFO。
+- 如果 formal 期间 `queue_depth` 或 `frame_age_ms` 持续增长，再查性能瓶颈或考虑 latest/drop policy。
+- calibration 重跑后，重点看 contact/pinch 开头是否还出现上一阶段旧状态；如果 flush 生效，旧状态应该消失或大幅减少。
 
 这些字段和 n-back、pinch、wrist 数据使用同一个 `monotonic_ms` 时间系统，可以直接做时间差。
 

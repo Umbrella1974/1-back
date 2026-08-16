@@ -184,6 +184,14 @@ class LiveRawStreamServer:
         with self._condition:
             return len(self._frames)
 
+    def drain_frames(self) -> list[LiveRawFrame]:
+        """Remove and return all currently queued frames."""
+
+        with self._condition:
+            frames = list(self._frames)
+            self._frames.clear()
+            return frames
+
     def stats_snapshot(self) -> LiveRawStreamStats:
         """Return a thread-safe statistics snapshot."""
 

@@ -297,8 +297,12 @@ class PinchHaptic1BackCoreResult:
     trial_gate_enabled: bool = True
     digit_guard_enabled: bool = True
     queue_depth_at_formal_start: int | None = None
+    queue_depth_before_formal_flush: int | None = None
+    flushed_count_at_formal_start: int | None = None
+    first_frame_index_after_formal_flush: int | None = None
     latest_received_frame_index_at_formal_start: int | None = None
     max_queue_depth_during_formal: int | None = None
+    max_frame_age_ms_during_formal: float | None = None
 
 
 def run_pinch_haptic_1back_core(
@@ -703,6 +707,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     calibration_save_reason = ""
     formal_result: PinchHaptic1BackCoreResult | None = None
     end_reason = ""
+    manus_queue_flush_events: list[dict[str, Any]] = []
     server = _make_manus_tcp_server(manus_config)
     manus_tcp_log_state = ManusTcpLogState()
     display: _NBackPygameDisplay | None = None
@@ -741,6 +746,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                     save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
                     tcp_log_state=manus_tcp_log_state,
                     min_valid_frames=calibration_config.min_valid_frames,
+                    flush_events=manus_queue_flush_events,
                 )
                 if not calibration_quick_check.passed:
                     warnings.append(
@@ -774,6 +780,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 manus_config=manus_config,
                 session_id=session_id,
                 tcp_log_state=manus_tcp_log_state,
+                flush_events=manus_queue_flush_events,
             )
         logger.write_calibration(calibration)
         print(f"Calibration threshold_a={calibration.threshold_a:.6f}")
@@ -795,6 +802,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 session_id=session_id,
                 save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
                 tcp_log_state=manus_tcp_log_state,
+                flush_events=manus_queue_flush_events,
             )
         if wrist_rotation_config.enabled and wrist_calibration is not None:
             logger.write_wrist_rotation_calibration(wrist_calibration)
@@ -866,6 +874,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             wrist_rotation_config=wrist_rotation_config,
             wrist_rotation_calibration=wrist_calibration,
             task_type=task_type,
+            flush_events=manus_queue_flush_events,
         )
         total_haptic_events = formal_result.total_haptic_events
         end_reason = formal_result.end_reason
@@ -958,6 +967,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 ),
                 "wrist_rotation_valid_samples": logger.total_wrist_rotation_valid_samples,
                 "wrist_rotation_invalid_samples": logger.total_wrist_rotation_invalid_samples,
+                "manus_queue_flush_events": manus_queue_flush_events,
                 "warnings": warnings,
                 "errors": errors,
         }
@@ -998,6 +1008,7 @@ def _run_live_pinch_calibration(
     manus_config: dict[str, Any],
     session_id: str,
     tcp_log_state: ManusTcpLogState | None,
+    flush_events: list[dict[str, Any]] | None = None,
 ) -> PinchCalibrationResult:
     _prompt_enter_or_abort("Open hand calibration: press Enter, then keep hand open...")
     open_samples = _collect_live_calibration_samples(
@@ -1009,6 +1020,7 @@ def _run_live_pinch_calibration(
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
         phase="open",
+        flush_events=flush_events,
     )
     _prompt_enter_or_abort(
         "C-shape calibration: press Enter, then keep the task-ready C-shape posture..."
@@ -1022,6 +1034,7 @@ def _run_live_pinch_calibration(
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
         phase="contact",
+        flush_events=flush_events,
     )
     _prompt_enter_or_abort(
         "Pinch calibration: press Enter, then pinch thumb and target finger..."
@@ -1035,6 +1048,7 @@ def _run_live_pinch_calibration(
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
         phase="pinch",
+        flush_events=flush_events,
     )
     return calibrate_from_samples(
         open_samples,
@@ -1179,6 +1193,7 @@ def _run_live_calibration_quick_check(
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None,
     min_valid_frames: int,
+    flush_events: list[dict[str, Any]] | None = None,
 ) -> CalibrationQuickCheckResult:
     _prompt_enter_or_abort(
         "Calibration quick check: press Enter, then keep hand open and wrist neutral..."
@@ -1192,6 +1207,7 @@ def _run_live_calibration_quick_check(
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
         phase="quick_check_open",
+        flush_events=flush_events,
     )
     pinch_result = _pinch_open_quick_check_from_samples(
         open_samples,
@@ -1217,6 +1233,8 @@ def _run_live_calibration_quick_check(
         duration_s=reuse_config.quick_check_duration_s,
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
+        phase="quick_check_wrist_neutral",
+        flush_events=flush_events,
     )
     wrist_result = _wrist_neutral_quick_check_from_quaternions(
         quaternions,
@@ -1381,6 +1399,52 @@ def _prompt_enter_or_abort(prompt: str) -> None:
         raise OperatorAbort("operator_aborted")
 
 
+def _flush_manus_queue(
+    server: LiveRawStreamServer,
+    *,
+    phase: str,
+    flush_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    latest_before = _latest_received_frame_index(server)
+    drained = server.drain_frames()
+    event = {
+        "phase": str(phase),
+        "queue_depth_before_flush": len(drained),
+        "flushed_count": len(drained),
+        "last_flushed_frame_index": (
+            drained[-1].frame_index if drained else None
+        ),
+        "latest_received_frame_index_before_flush": latest_before,
+        "first_frame_index_after_flush": None,
+        "queue_depth_after_flush": _queue_depth(server),
+    }
+    if flush_events is not None:
+        flush_events.append(event)
+    if drained:
+        print(f"[MANUS TCP] flushed {len(drained)} queued frames before {phase}")
+    return event
+
+
+def _mark_first_frame_after_flush(
+    flush_info: dict[str, Any],
+    frame: Any,
+) -> int | None:
+    frame_index = getattr(frame, "frame_index", None)
+    if flush_info.get("first_frame_index_after_flush") is None:
+        flush_info["first_frame_index_after_flush"] = frame_index
+    return flush_info.get("first_frame_index_after_flush")
+
+
+def _frame_age_ms(frame: Any, *, now_s: float | None = None) -> float | None:
+    receive_s = getattr(frame, "receive_time_monotonic", None)
+    if receive_s is None:
+        return None
+    age = ((time.monotonic() if now_s is None else float(now_s)) - float(receive_s)) * 1000.0
+    if not math.isfinite(age):
+        return None
+    return max(0.0, age)
+
+
 def _collect_live_calibration_samples(
     server: LiveRawStreamServer,
     parser: ManusOnlyPinchInput,
@@ -1391,7 +1455,13 @@ def _collect_live_calibration_samples(
     save_raw_frames: bool,
     phase: str,
     tcp_log_state: ManusTcpLogState | None,
+    flush_events: list[dict[str, Any]] | None = None,
 ) -> list[PinchInputSample]:
+    flush_info = _flush_manus_queue(
+        server,
+        phase=phase,
+        flush_events=flush_events,
+    )
     queue_depth_at_phase_start = _queue_depth(server)
     deadline = time.monotonic() + float(duration_s)
     samples: list[PinchInputSample] = []
@@ -1401,6 +1471,8 @@ def _collect_live_calibration_samples(
         frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
         if frame is None:
             continue
+        first_frame_index_after_flush = _mark_first_frame_after_flush(flush_info, frame)
+        frame_age_ms = _frame_age_ms(frame)
         raw = _raw_from_live_frame(frame)
         if save_raw_frames:
             logger.write_raw_frame(raw)
@@ -1411,7 +1483,11 @@ def _collect_live_calibration_samples(
             phase=phase,
             queue_depth=queue_depth_before_read,
             queue_depth_at_phase_start=queue_depth_at_phase_start,
+            queue_depth_before_flush=flush_info["queue_depth_before_flush"],
+            flushed_count=flush_info["flushed_count"],
+            first_frame_index_after_flush=first_frame_index_after_flush,
             latest_received_frame_index=latest_received_frame_index,
+            frame_age_ms=frame_age_ms,
         )
     return samples
 
@@ -1435,6 +1511,7 @@ def _run_live_wrist_rotation_calibration(
     session_id: str,
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None = None,
+    flush_events: list[dict[str, Any]] | None = None,
 ) -> WristRotationCalibrationResult:
     _prompt_enter_or_abort("Wrist neutral calibration: press Enter, then keep wrist neutral...")
     print("[WRIST] neutral calibration collecting...")
@@ -1445,6 +1522,8 @@ def _run_live_wrist_rotation_calibration(
         duration_s=config.calibration_duration_s,
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
+        phase="wrist_neutral",
+        flush_events=flush_events,
     )
     _prompt_enter_or_abort("Wrist left calibration: press Enter, then rotate wrist left...")
     print("[WRIST] left calibration collecting...")
@@ -1455,6 +1534,8 @@ def _run_live_wrist_rotation_calibration(
         duration_s=config.calibration_duration_s,
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
+        phase="wrist_left",
+        flush_events=flush_events,
     )
     _prompt_enter_or_abort("Wrist right calibration: press Enter, then rotate wrist right...")
     print("[WRIST] right calibration collecting...")
@@ -1465,6 +1546,8 @@ def _run_live_wrist_rotation_calibration(
         duration_s=config.calibration_duration_s,
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
+        phase="wrist_right",
+        flush_events=flush_events,
     )
     up: list[tuple[float, float, float, float]] = []
     down: list[tuple[float, float, float, float]] = []
@@ -1478,6 +1561,8 @@ def _run_live_wrist_rotation_calibration(
             duration_s=config.calibration_duration_s,
             save_raw_frames=save_raw_frames,
             tcp_log_state=tcp_log_state,
+            phase="wrist_up",
+            flush_events=flush_events,
         )
         _prompt_enter_or_abort("Wrist down calibration: press Enter, then move wrist down...")
         print("[WRIST] down calibration collecting...")
@@ -1488,6 +1573,8 @@ def _run_live_wrist_rotation_calibration(
             duration_s=config.calibration_duration_s,
             save_raw_frames=save_raw_frames,
             tcp_log_state=tcp_log_state,
+            phase="wrist_down",
+            flush_events=flush_events,
         )
     result = calibrate_wrist_rotation(
         neutral,
@@ -1519,13 +1606,21 @@ def _collect_live_wrist_quaternions(
     duration_s: float,
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None = None,
+    phase: str = "wrist",
+    flush_events: list[dict[str, Any]] | None = None,
 ) -> list[tuple[float, float, float, float]]:
+    flush_info = _flush_manus_queue(
+        server,
+        phase=phase,
+        flush_events=flush_events,
+    )
     deadline = time.monotonic() + float(duration_s)
     quaternions: list[tuple[float, float, float, float]] = []
     while time.monotonic() < deadline:
         frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
         if frame is None:
             continue
+        _mark_first_frame_after_flush(flush_info, frame)
         raw = _raw_from_live_frame(frame)
         if save_raw_frames:
             logger.write_raw_frame(raw)
@@ -1560,6 +1655,7 @@ def _run_live_formal_phase(
     wrist_rotation_config: WristRotationConfig | None = None,
     wrist_rotation_calibration: WristRotationCalibrationResult | None = None,
     task_type: str = TASK_TYPE_DUAL,
+    flush_events: list[dict[str, Any]] | None = None,
 ) -> PinchHaptic1BackCoreResult:
     task = _normalize_task_type(task_type)
     nback_enabled = task == TASK_TYPE_DUAL
@@ -1574,12 +1670,22 @@ def _run_live_formal_phase(
     feedback_config = haptic_feedback_display or HapticFeedbackDisplayConfig()
     episode_state = HapticEpisodeState()
     latest_sample: PinchInputSample | None = None
+    latest_wrist_sample = None
     latest_zone = "invalid"
     previous_logged_zone = "invalid"
     total_haptic_events = 0
     zone_stats = ZoneRunStats()
     debug_config = haptic_debug_config or HapticDebugConfig()
     wrist_config = wrist_rotation_config or WristRotationConfig()
+    flush_info = _flush_manus_queue(
+        server,
+        phase="formal_start",
+        flush_events=flush_events,
+    )
+    queue_depth_at_formal_start = _queue_depth(server)
+    latest_received_frame_index_at_formal_start = _latest_received_frame_index(server)
+    max_queue_depth_during_formal = queue_depth_at_formal_start
+    max_frame_age_ms_during_formal: float | None = None
     start_ms = time.monotonic() * 1000.0
     duration_deadline_ms = start_ms + max(0.0, float(duration_s)) * 1000.0
     if nback_enabled and nback_timeline is not None:
@@ -1590,9 +1696,6 @@ def _run_live_formal_phase(
     post_release_end_ms: float | None = None
     post_release_pinch_samples = 0
     release_gate_state = ReleaseGateState()
-    queue_depth_at_formal_start = _queue_depth(server)
-    latest_received_frame_index_at_formal_start = _latest_received_frame_index(server)
-    max_queue_depth_during_formal = queue_depth_at_formal_start
 
     while True:
         now_ms = time.monotonic() * 1000.0
@@ -1610,6 +1713,14 @@ def _run_live_formal_phase(
         latest_received_frame_index = _latest_received_frame_index(server)
         frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
         while frame is not None:
+            first_frame_index_after_flush = _mark_first_frame_after_flush(flush_info, frame)
+            frame_age_ms = _frame_age_ms(frame)
+            if frame_age_ms is not None:
+                max_frame_age_ms_during_formal = (
+                    frame_age_ms
+                    if max_frame_age_ms_during_formal is None
+                    else max(max_frame_age_ms_during_formal, frame_age_ms)
+                )
             raw = _raw_from_live_frame(frame)
             if save_raw_frames:
                 logger.write_raw_frame(raw)
@@ -1633,7 +1744,11 @@ def _run_live_formal_phase(
                 phase="formal",
                 queue_depth=queue_depth_before_read,
                 queue_depth_at_phase_start=queue_depth_at_formal_start,
+                queue_depth_before_flush=flush_info["queue_depth_before_flush"],
+                flushed_count=flush_info["flushed_count"],
+                first_frame_index_after_flush=first_frame_index_after_flush,
                 latest_received_frame_index=latest_received_frame_index,
+                frame_age_ms=frame_age_ms,
             )
             if (
                 wrist_config.enabled
@@ -1794,8 +1909,12 @@ def _run_live_formal_phase(
         digit_guard_enabled=digit_guard_enabled,
         **zone_stats.to_dict(),
         queue_depth_at_formal_start=queue_depth_at_formal_start,
+        queue_depth_before_formal_flush=flush_info["queue_depth_before_flush"],
+        flushed_count_at_formal_start=flush_info["flushed_count"],
+        first_frame_index_after_formal_flush=flush_info["first_frame_index_after_flush"],
         latest_received_frame_index_at_formal_start=latest_received_frame_index_at_formal_start,
         max_queue_depth_during_formal=max_queue_depth_during_formal,
+        max_frame_age_ms_during_formal=max_frame_age_ms_during_formal,
     )
 
 
@@ -2124,8 +2243,12 @@ def _haptic_end_summary_fields(
             "release_was_held": False,
             "release_emit_trial_number": None,
             "queue_depth_at_formal_start": None,
+            "queue_depth_before_formal_flush": None,
+            "flushed_count_at_formal_start": None,
+            "first_frame_index_after_formal_flush": None,
             "latest_received_frame_index_at_formal_start": None,
             "max_queue_depth_during_formal": None,
+            "max_frame_age_ms_during_formal": None,
             "haptic_policy_warnings": [],
         }
     return {
@@ -2147,10 +2270,16 @@ def _haptic_end_summary_fields(
         "post_release_end_ms": result.post_release_end_ms,
         "post_release_pinch_samples": result.post_release_pinch_samples,
         "queue_depth_at_formal_start": result.queue_depth_at_formal_start,
+        "queue_depth_before_formal_flush": result.queue_depth_before_formal_flush,
+        "flushed_count_at_formal_start": result.flushed_count_at_formal_start,
+        "first_frame_index_after_formal_flush": (
+            result.first_frame_index_after_formal_flush
+        ),
         "latest_received_frame_index_at_formal_start": (
             result.latest_received_frame_index_at_formal_start
         ),
         "max_queue_depth_during_formal": result.max_queue_depth_during_formal,
+        "max_frame_age_ms_during_formal": result.max_frame_age_ms_during_formal,
         "release_was_held": result.release_was_held,
         "release_emit_trial_number": result.release_emit_trial_number,
         "haptic_policy_warnings": list(result.haptic_policy_warnings),
