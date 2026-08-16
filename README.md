@@ -287,11 +287,16 @@ wrist_rotation:
 - `latest_received_frame_index`：读取当前 frame 前 Python 接收线程已经收到的最新 frame index。
 - `frame_age_ms`：当前 frame 从 TCP callback 收到，到正式被当前消费者处理之间的延迟。
 
-`summary.json` 额外记录 `manus_queue_flush_events`，按顺序列出 quick check、pinch calibration、wrist calibration、formal start 前的 flush 情况。formal loop 暂时仍然使用 FIFO；下一次 pilot 后先看 `pinch_timeseries.csv`：
+`summary.json` 额外记录 `manus_queue_flush_events`，按顺序列出 quick check、pinch calibration、wrist calibration、formal start 前的 flush 情况。
 
-- 如果 formal 期间 `queue_depth` 基本在 0-1、`frame_age_ms` 很低，保留 FIFO。
-- 如果 formal 期间 `queue_depth` 或 `frame_age_ms` 持续增长，再查性能瓶颈或考虑 latest/drop policy。
+MANUS queue 警示：
+
+- 已实现所有“消费者暂停后重新开始”位置的 queue flush，包括 quick check、Open/C-shape/Pinch calibration、wrist calibration 和 formal loop start。
+- formal loop 暂时继续使用 FIFO。不要在没有证据时切到 latest/drop policy，因为 RT onset 检测依赖连续帧；丢中间帧本身可能引入新的时间误差。
+- 每次 pilot 后先看 `pinch_timeseries.csv`：如果 formal 期间 `queue_depth` 基本在 0-1、`frame_age_ms` 很低，保留 FIFO。
+- 如果 formal 期间 `queue_depth` 或 `frame_age_ms` 持续增长，再查性能瓶颈；只有确认持续 backlog 后，才考虑 latest/drop policy。
 - calibration 重跑后，重点看 contact/pinch 开头是否还出现上一阶段旧状态；如果 flush 生效，旧状态应该消失或大幅减少。
+- 2026-08-17 的 single/dual pilot 中，formal loop 的 `max_queue_depth_during_formal` 约为 2，`max_frame_age_ms_during_formal` 约为 32 ms，没有持续增长。因此当前判断是：queue flush 第一层问题已基本解决，FIFO 可以暂时保留。
 
 这些字段和 n-back、pinch、wrist 数据使用同一个 `monotonic_ms` 时间系统，可以直接做时间差。
 
