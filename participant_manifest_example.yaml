@@ -1,0 +1,42 @@
+participant_id: P001
+run_id: P001_exp2_001
+run_seed: null
+output_root: outputs
+
+calibration:
+  path: calibrations/P001_exp2_cal_v01.json
+  reuse: true
+  quick_check: true
+
+sessions:
+  - session_label: motor_single_plan1
+    order: 1
+    task_type: single
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-1.yaml
+    plan_id: only-motor-1
+
+  - session_label: motor_dual_plan1
+    order: 2
+    task_type: dual
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-1.yaml
+    plan_id: only-motor-1
+
+  - session_label: matrix_single_plan1
+    order: 3
+    task_type: single
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-1.yaml
+    plan_id: only-matrix-1
+
+  - session_label: matrix_dual_plan1
+    order: 4
+    task_type: dual
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-1.yaml
+    plan_id: only-matrix-1

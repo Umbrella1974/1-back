@@ -1,0 +1,89 @@
+plan_id: only-motor-0
+description: Contact first, then slip-left-right-up-down, release last.
+random_seed: 123
+
+
+timing:
+  contact_onset_delay_ms: [1000, 2000]
+  inter_event_gap_ms: [9000,13000]
+  refractory_ms: 3000
+
+events:
+  - name: contact
+    modality: vibration
+    command_label: contact_enter
+    command_id: 1
+    duration_ms: 1500
+    trigger_zone: open_zone
+    onset_delay_ms: [1000, 2000]
+    
+  - name: slip
+    modality: vibration
+    command_label: slip
+    command_id: 11
+    duration_ms: 2000
+    trigger_zone: closed_zone
+    nback_trial_window: [6,13]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000    
+
+  - name: left
+    modality: vibration
+    command_label: wrist_left
+    command_id: 5
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [13,20]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000    
+
+
+  - name: right
+    modality: vibration
+    command_label: wrist_right
+    command_id: 9
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [20,27]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000    
+
+
+  - name: up
+    modality: vibration
+    command_label: wrist_up
+    command_id: 8
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [27,34]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000    
+
+
+  - name: down
+    modality: vibration
+    command_label: wrist_down
+    command_id: 10
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    nback_trial_window: [34,41]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000    
+
+  - name: release
+    modality: vibration
+    command_label: contact_exit
+    command_id: 4
+    duration_ms: 1500
+    trigger_zone: closed_zone
+    nback_trial_window: [41,49]
+    require_wrist_neutral_before_emit: true
+    wrist_neutral_timeout_ms: 3000    
+
+zones:
+  open_zone:
+    lower: auto_a
+    upper: auto_max
+  closed_zone:
+    lower: auto_min
+    upper: auto_a

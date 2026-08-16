@@ -405,6 +405,56 @@ calibration_reuse:
 
 第一版 quick check 没有固定 Open/C/Pinch 的人为百分比阈值；open 检查使用旧 Open reference 的 MAD 倍数。`open_mad_multiplier` 和 `wrist_neutral_min_ratio` 目前是 config 参数，下一批 pilot 后再根据真实漂移分布决定是否调整。
 
+Participant manifest：
+
+如果要按受试者级别连续跑多个 session，可以从 `participant_manifest_example.yaml` 复制一份并修改：
+
+```yaml
+participant_id: P001
+run_id: P001_exp2_001
+run_seed: null
+output_root: outputs
+
+calibration:
+  path: calibrations/P001_exp2_cal_v01.json
+  reuse: true
+  quick_check: true
+
+sessions:
+  - session_label: motor_single_plan1
+    order: 1
+    task_type: single
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-1.yaml
+    plan_id: only-motor-1
+```
+
+先只校验，不连接 MANUS/ESP32：
+
+```bash
+python run_participant_manifest.py --manifest participant_manifest_example.yaml --validate-only
+```
+
+正式运行：
+
+```bash
+python run_participant_manifest.py --manifest participant_manifest_example.yaml
+```
+
+manifest runner 会：
+
+- 检查 `participant_id`、`run_id`、session label/order 唯一性。
+- 检查 `task_type`、`feedback_type`、config 文件、haptic plan 文件、`plan_id`。
+- 检查 `feedback_type` 是否和 config 里的 `haptic` / `vibration_tcp` / `matrix_tcp` 开关明显矛盾。
+- 为每个 session 从 `run_seed` 派生 `session_seed`，再由现有 session 逻辑派生 haptic/nback seed。
+- 为每个 session 生成临时 config，写到 `outputs/<run_id>/configs/`。
+- 把每个 session 的输出放到 `outputs/<run_id>/sessions/`。
+- 写 `outputs/<run_id>/run_summary.json`，记录 planned/completed session、seed、condition、plan、output path、calibration path。
+- 如果某个 session quick check 失败并保存了新版 calibration，后续 session 会自动改用新版 calibration path。
+
+当前 manifest 不做自动 Latin square、不自动决定条件顺序、不自动选择 plan；它只忠实执行你写在 manifest 里的顺序。
+
 ## 不应修改的边界
 
 除非有明确新需求，不要修改：
@@ -424,4 +474,4 @@ calibration_reuse:
 - 如果要把所有 haptic 条件做成正式实验批量入口，可以再新增一个小的条件选择层；当前最小做法仍是每次在 `dualtask_config.yaml` 里切换 `haptic_plan_config`。
 - `analyze_cue_cycles.py` 是旧版 wrist-only 周期分析；新分析优先使用 `analyze_cue_response_metrics.py`。
 - cue cycle 分析目前是事后脚本，没有写回运行时主流程；如果正式流程需要自动生成分析结果，可以在 session 结束后再接入。
-- 如果要把 calibration 放在受试者最前面并轮流跑多个 session，下一步应新增 run-level manifest：一次完整 calibration，后续 session 读取同一份 calibration 并做 quick check；manifest 负责检查 config/plan 不重复、记录 session 顺序和派生 seed。当前已完成 calibration reuse 底层能力，但还没有 participant-level 顺序执行器。
+- 如果要正式采集，建议先用 `--validate-only` 检查 manifest，再用一位 pilot 完整跑一遍 manifest workflow，确认 calibration quick check 和连续 session 切换在真实设备上顺畅。

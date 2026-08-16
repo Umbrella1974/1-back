@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import yaml
+
+from run_participant_manifest import (
+    load_participant_manifest,
+    prepare_session_config,
+    run_participant_manifest,
+    validate_participant_manifest,
+)
+
+
+def test_manifest_validate_only_prepares_session_configs(tmp_path) -> None:
+    motor_config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
+    matrix_config = _write_dualtask_config(tmp_path / "only-matrix.yaml", feedback="matrix_only")
+    motor_plan = _write_plan(tmp_path / "motor-plan.yaml", plan_id="motor_plan_1", modality="vibration")
+    matrix_plan = _write_plan(tmp_path / "matrix-plan.yaml", plan_id="matrix_plan_1", modality="matrix")
+    manifest_path = _write_manifest(
+        tmp_path / "manifest.yaml",
+        tmp_path=tmp_path,
+        sessions=[
+            {
+                "session_label": "motor_single_01",
+                "order": 1,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(motor_config),
+                "haptic_plan_config": str(motor_plan),
+                "plan_id": "motor_plan_1",
+            },
+            {
+                "session_label": "matrix_dual_01",
+                "order": 2,
+                "task_type": "dual",
+                "feedback_type": "matrix_only",
+                "config": str(matrix_config),
+                "haptic_plan_config": str(matrix_plan),
+                "plan_id": "matrix_plan_1",
+            },
+        ],
+    )
+
+    run_dir = run_participant_manifest(manifest_path, validate_only=True)
+    summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert summary["validate_only"] is True
+    assert summary["run_seed"] == 12345
+    assert summary["prepared_session_count"] == 2
+    assert summary["sessions"][0]["session_seed"] != summary["sessions"][1]["session_seed"]
+    prepared_config = Path(summary["sessions"][0]["prepared_config"])
+    payload = yaml.safe_load(prepared_config.read_text(encoding="utf-8"))
+    assert payload["session"]["participant_id"] == "P001"
+    assert payload["session"]["task_type"] == "single"
+    assert payload["session"]["haptic_plan_config"] == str(motor_plan)
+    assert payload["calibration_reuse"]["calibration_id"] == "P001_exp2_cal_v01"
+
+
+def test_manifest_validation_rejects_feedback_config_mismatch(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
+    plan = _write_plan(tmp_path / "matrix-plan.yaml", plan_id="matrix_plan_1", modality="matrix")
+    manifest = load_participant_manifest(
+        _write_manifest(
+            tmp_path / "manifest.yaml",
+            tmp_path=tmp_path,
+            sessions=[
+                {
+                    "session_label": "bad_matrix",
+                    "order": 1,
+                    "task_type": "single",
+                    "feedback_type": "matrix_only",
+                    "config": str(config),
+                    "haptic_plan_config": str(plan),
+                    "plan_id": "matrix_plan_1",
+                }
+            ],
+        )
+    )
+
+    result = validate_participant_manifest(manifest)
+
+    assert result.passed is False
+    assert "feedback_type matrix_only does not match" in result.errors[0]
+
+
+def test_manifest_runner_updates_calibration_path_from_session_summary(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
+    plan = _write_plan(tmp_path / "motor-plan.yaml", plan_id="motor_plan_1", modality="vibration")
+    manifest_path = _write_manifest(
+        tmp_path / "manifest.yaml",
+        tmp_path=tmp_path,
+        sessions=[
+            {
+                "session_label": "motor_single_01",
+                "order": 1,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+            {
+                "session_label": "motor_single_02",
+                "order": 2,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+        ],
+    )
+    calls: list[Path] = []
+
+    def fake_runner(config_path: str | Path) -> Path:
+        calls.append(Path(config_path))
+        output_dir = tmp_path / f"session_{len(calls)}"
+        output_dir.mkdir()
+        summary = {
+            "calibration_id": f"P001_exp2_cal_v0{len(calls)}",
+            "calibration_loaded_from_bundle": len(calls) > 1,
+            "calibration_saved_path": (
+                str(tmp_path / "calibrations" / "P001_exp2_cal_v02.json")
+                if len(calls) == 1
+                else ""
+            ),
+        }
+        (output_dir / "summary.json").write_text(
+            json.dumps(summary),
+            encoding="utf-8",
+        )
+        return output_dir
+
+    run_dir = run_participant_manifest(manifest_path, runner_fn=fake_runner)
+    run_summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+    second_config = yaml.safe_load(calls[1].read_text(encoding="utf-8"))
+
+    assert run_summary["completed_session_count"] == 2
+    assert run_summary["active_calibration_path"].endswith("P001_exp2_cal_v02.json")
+    assert second_config["calibration_reuse"]["calibration_in"].endswith(
+        "P001_exp2_cal_v02.json"
+    )
+
+
+def test_prepare_session_config_derives_reproducible_seeds(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
+    plan = _write_plan(tmp_path / "motor-plan.yaml", plan_id="motor_plan_1", modality="vibration")
+    manifest = load_participant_manifest(
+        _write_manifest(
+            tmp_path / "manifest.yaml",
+            tmp_path=tmp_path,
+            sessions=[
+                {
+                    "session_label": "motor_single_01",
+                    "order": 1,
+                    "task_type": "single",
+                    "feedback_type": "motor_only",
+                    "config": str(config),
+                    "haptic_plan_config": str(plan),
+                    "plan_id": "motor_plan_1",
+                }
+            ],
+        )
+    )
+
+    first = prepare_session_config(
+        manifest,
+        manifest.sessions[0],
+        run_dir=tmp_path / "run_a",
+        config_dir=tmp_path / "run_a" / "configs",
+        current_calibration_path=manifest.calibration_path,
+    )
+    second = prepare_session_config(
+        manifest,
+        manifest.sessions[0],
+        run_dir=tmp_path / "run_b",
+        config_dir=tmp_path / "run_b" / "configs",
+        current_calibration_path=manifest.calibration_path,
+    )
+
+    assert first.session_seed == second.session_seed
+    assert first.haptic_seed == second.haptic_seed
+    assert first.nback_seed == second.nback_seed
+
+
+def _write_manifest(path: Path, *, tmp_path: Path, sessions: list[dict]) -> Path:
+    payload = {
+        "participant_id": "P001",
+        "run_id": "P001_exp2_001",
+        "run_seed": 12345,
+        "output_root": str(tmp_path / "outputs"),
+        "calibration": {
+            "path": str(tmp_path / "calibrations" / "P001_exp2_cal_v01.json"),
+            "reuse": True,
+            "quick_check": True,
+        },
+        "sessions": sessions,
+    }
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _write_dualtask_config(path: Path, *, feedback: str) -> Path:
+    vibration = feedback in {"motor_only", "combined"}
+    matrix = feedback in {"matrix_only", "combined"}
+    payload = {
+        "session": {
+            "session_id_prefix": "pinch_haptic_1back",
+            "output_root": "outputs",
+            "participant_id": "",
+            "condition_id": "",
+            "duration_s": 10,
+            "haptic_plan_config": "unused.yaml",
+        },
+        "haptic": {
+            "vibration_enabled": vibration,
+            "matrix_enabled": matrix,
+            "visual_text_cue_enabled": False,
+        },
+        "vibration_tcp": {"enabled": vibration},
+        "matrix_tcp": {"enabled": matrix},
+        "sync": {},
+    }
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _write_plan(path: Path, *, plan_id: str, modality: str) -> Path:
+    contact = (
+        {
+            "name": "contact",
+            "modality": "matrix",
+            "channel_list": [1],
+            "duration_ms": 100,
+            "trigger_zone": "open_zone",
+        }
+        if modality == "matrix"
+        else {
+            "name": "contact",
+            "modality": "vibration",
+            "command_id": 1,
+            "duration_ms": 100,
+            "trigger_zone": "open_zone",
+        }
+    )
+    release = (
+        {
+            "name": "release",
+            "modality": "matrix",
+            "channel_list": [2],
+            "duration_ms": 100,
+            "trigger_zone": "closed_zone",
+        }
+        if modality == "matrix"
+        else {
+            "name": "release",
+            "modality": "vibration",
+            "command_id": 2,
+            "duration_ms": 100,
+            "trigger_zone": "closed_zone",
+        }
+    )
+    payload = {
+        "plan_id": plan_id,
+        "description": "",
+        "random_seed": 1,
+        "timing": {
+            "contact_onset_delay_ms": [0, 0],
+            "inter_event_gap_ms": [0, 0],
+            "refractory_ms": 0,
+        },
+        "zones": {
+            "open_zone": {"lower": "auto_a", "upper": "auto_max"},
+            "closed_zone": {"lower": "auto_min", "upper": "auto_a"},
+        },
+        "events": [contact, release],
+    }
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
