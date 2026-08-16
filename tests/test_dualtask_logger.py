@@ -49,13 +49,24 @@ def test_dualtask_logger_writes_pinch_timeseries_csv(tmp_path) -> None:
         note="",
     )
 
-    logger.write_pinch_sample(sample, calibration=_calibration(), zone="open_zone")
+    logger.write_pinch_sample(
+        sample,
+        calibration=_calibration(),
+        zone="open_zone",
+        queue_depth=12,
+        queue_depth_at_phase_start=20,
+        latest_received_frame_index=99,
+    )
 
     with logger.paths.pinch_timeseries_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["session_id"] == "session-a"
+    assert rows[0]["phase"] == "formal"
     assert rows[0]["zone"] == "open_zone"
     assert rows[0]["threshold_a"] == "0.055"
+    assert rows[0]["queue_depth"] == "12"
+    assert rows[0]["queue_depth_at_phase_start"] == "20"
+    assert rows[0]["latest_received_frame_index"] == "99"
     assert logger.total_pinch_samples == 1
     assert logger.total_valid_pinch_samples == 1
 
@@ -78,13 +89,22 @@ def test_dualtask_logger_writes_calibration_timeseries_csv(tmp_path) -> None:
         note="",
     )
 
-    logger.write_calibration_sample(sample, phase="open")
+    logger.write_calibration_sample(
+        sample,
+        phase="open",
+        queue_depth=7,
+        queue_depth_at_phase_start=30,
+        latest_received_frame_index=101,
+    )
 
     with logger.paths.calibration_timeseries_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["session_id"] == "session-a"
     assert rows[0]["phase"] == "open"
     assert rows[0]["pinch_distance"] == "0.08"
+    assert rows[0]["queue_depth"] == "7"
+    assert rows[0]["queue_depth_at_phase_start"] == "30"
+    assert rows[0]["latest_received_frame_index"] == "101"
 
 
 def test_dualtask_logger_writes_calibration_and_summary_json(tmp_path) -> None:

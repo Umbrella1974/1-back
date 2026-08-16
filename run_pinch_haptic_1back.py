@@ -296,6 +296,9 @@ class PinchHaptic1BackCoreResult:
     nback_enabled: bool = True
     trial_gate_enabled: bool = True
     digit_guard_enabled: bool = True
+    queue_depth_at_formal_start: int | None = None
+    latest_received_frame_index_at_formal_start: int | None = None
+    max_queue_depth_during_formal: int | None = None
 
 
 def run_pinch_haptic_1back_core(
@@ -997,7 +1000,7 @@ def _run_live_pinch_calibration(
     tcp_log_state: ManusTcpLogState | None,
 ) -> PinchCalibrationResult:
     _prompt_enter_or_abort("Open hand calibration: press Enter, then keep hand open...")
-    open_samples = _collect_live_samples(
+    open_samples = _collect_live_calibration_samples(
         server,
         parser,
         logger,
@@ -1005,12 +1008,12 @@ def _run_live_pinch_calibration(
         duration_s=calibration_config.open_hand_duration_s,
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
+        phase="open",
     )
-    _write_calibration_phase_samples(logger, open_samples, phase="open")
     _prompt_enter_or_abort(
         "C-shape calibration: press Enter, then keep the task-ready C-shape posture..."
     )
-    contact_samples = _collect_live_samples(
+    contact_samples = _collect_live_calibration_samples(
         server,
         parser,
         logger,
@@ -1018,12 +1021,12 @@ def _run_live_pinch_calibration(
         duration_s=calibration_config.contact_hand_duration_s,
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
+        phase="contact",
     )
-    _write_calibration_phase_samples(logger, contact_samples, phase="contact")
     _prompt_enter_or_abort(
         "Pinch calibration: press Enter, then pinch thumb and target finger..."
     )
-    pinch_samples = _collect_live_samples(
+    pinch_samples = _collect_live_calibration_samples(
         server,
         parser,
         logger,
@@ -1031,8 +1034,8 @@ def _run_live_pinch_calibration(
         duration_s=calibration_config.pinch_hand_duration_s,
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
+        phase="pinch",
     )
-    _write_calibration_phase_samples(logger, pinch_samples, phase="pinch")
     return calibrate_from_samples(
         open_samples,
         pinch_samples,
@@ -1180,7 +1183,7 @@ def _run_live_calibration_quick_check(
     _prompt_enter_or_abort(
         "Calibration quick check: press Enter, then keep hand open and wrist neutral..."
     )
-    open_samples = _collect_live_samples(
+    open_samples = _collect_live_calibration_samples(
         server,
         parser,
         logger,
@@ -1188,6 +1191,7 @@ def _run_live_calibration_quick_check(
         duration_s=reuse_config.quick_check_duration_s,
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
+        phase="quick_check_open",
     )
     pinch_result = _pinch_open_quick_check_from_samples(
         open_samples,
@@ -1377,14 +1381,50 @@ def _prompt_enter_or_abort(prompt: str) -> None:
         raise OperatorAbort("operator_aborted")
 
 
-def _write_calibration_phase_samples(
+def _collect_live_calibration_samples(
+    server: LiveRawStreamServer,
+    parser: ManusOnlyPinchInput,
     logger: DualTaskLogger,
-    samples: Iterable[Any],
     *,
+    session_id: str,
+    duration_s: float,
+    save_raw_frames: bool,
     phase: str,
-) -> None:
-    for sample in samples:
-        logger.write_calibration_sample(sample, phase=phase)
+    tcp_log_state: ManusTcpLogState | None,
+) -> list[PinchInputSample]:
+    queue_depth_at_phase_start = _queue_depth(server)
+    deadline = time.monotonic() + float(duration_s)
+    samples: list[PinchInputSample] = []
+    while time.monotonic() < deadline:
+        queue_depth_before_read = _queue_depth(server)
+        latest_received_frame_index = _latest_received_frame_index(server)
+        frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
+        if frame is None:
+            continue
+        raw = _raw_from_live_frame(frame)
+        if save_raw_frames:
+            logger.write_raw_frame(raw)
+        sample = parser.parse_sample(frame, session_id=session_id)
+        samples.append(sample)
+        logger.write_calibration_sample(
+            sample,
+            phase=phase,
+            queue_depth=queue_depth_before_read,
+            queue_depth_at_phase_start=queue_depth_at_phase_start,
+            latest_received_frame_index=latest_received_frame_index,
+        )
+    return samples
+
+
+def _queue_depth(server: LiveRawStreamServer) -> int:
+    return int(server.queue_size())
+
+
+def _latest_received_frame_index(server: LiveRawStreamServer) -> int | None:
+    total = int(server.stats_snapshot().total_received_frames)
+    if total <= 0:
+        return None
+    return total - 1
 
 
 def _run_live_wrist_rotation_calibration(
@@ -1550,6 +1590,9 @@ def _run_live_formal_phase(
     post_release_end_ms: float | None = None
     post_release_pinch_samples = 0
     release_gate_state = ReleaseGateState()
+    queue_depth_at_formal_start = _queue_depth(server)
+    latest_received_frame_index_at_formal_start = _latest_received_frame_index(server)
+    max_queue_depth_during_formal = queue_depth_at_formal_start
 
     while True:
         now_ms = time.monotonic() * 1000.0
@@ -1559,6 +1602,12 @@ def _run_live_formal_phase(
                 if nback_active:
                     nback_timeline.record_response(key_name, now_ms)
 
+        queue_depth_before_read = _queue_depth(server)
+        max_queue_depth_during_formal = max(
+            max_queue_depth_during_formal,
+            queue_depth_before_read,
+        )
+        latest_received_frame_index = _latest_received_frame_index(server)
         frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
         while frame is not None:
             raw = _raw_from_live_frame(frame)
@@ -1577,7 +1626,15 @@ def _run_live_formal_phase(
             ):
                 print(f"enter {latest_zone}")
             previous_logged_zone = latest_zone
-            logger.write_pinch_sample(latest_sample, calibration=calibration, zone=latest_zone)
+            logger.write_pinch_sample(
+                latest_sample,
+                calibration=calibration,
+                zone=latest_zone,
+                phase="formal",
+                queue_depth=queue_depth_before_read,
+                queue_depth_at_phase_start=queue_depth_at_formal_start,
+                latest_received_frame_index=latest_received_frame_index,
+            )
             if (
                 wrist_config.enabled
                 and wrist_config.save_timeseries
@@ -1592,6 +1649,12 @@ def _run_live_formal_phase(
                 logger.write_wrist_rotation_sample(latest_wrist_sample)
             if post_release_started_ms is not None:
                 post_release_pinch_samples += 1
+            queue_depth_before_read = _queue_depth(server)
+            max_queue_depth_during_formal = max(
+                max_queue_depth_during_formal,
+                queue_depth_before_read,
+            )
+            latest_received_frame_index = _latest_received_frame_index(server)
             frame = _get_manus_frame(server, timeout=0.0, log_state=tcp_log_state)
 
         emitted: list[Any] = []
@@ -1730,6 +1793,9 @@ def _run_live_formal_phase(
         trial_gate_enabled=trial_gate_enabled,
         digit_guard_enabled=digit_guard_enabled,
         **zone_stats.to_dict(),
+        queue_depth_at_formal_start=queue_depth_at_formal_start,
+        latest_received_frame_index_at_formal_start=latest_received_frame_index_at_formal_start,
+        max_queue_depth_during_formal=max_queue_depth_during_formal,
     )
 
 
@@ -2057,6 +2123,9 @@ def _haptic_end_summary_fields(
             "post_release_pinch_samples": 0,
             "release_was_held": False,
             "release_emit_trial_number": None,
+            "queue_depth_at_formal_start": None,
+            "latest_received_frame_index_at_formal_start": None,
+            "max_queue_depth_during_formal": None,
             "haptic_policy_warnings": [],
         }
     return {
@@ -2077,6 +2146,11 @@ def _haptic_end_summary_fields(
         "post_release_started_ms": result.post_release_started_ms,
         "post_release_end_ms": result.post_release_end_ms,
         "post_release_pinch_samples": result.post_release_pinch_samples,
+        "queue_depth_at_formal_start": result.queue_depth_at_formal_start,
+        "latest_received_frame_index_at_formal_start": (
+            result.latest_received_frame_index_at_formal_start
+        ),
+        "max_queue_depth_during_formal": result.max_queue_depth_during_formal,
         "release_was_held": result.release_was_held,
         "release_emit_trial_number": result.release_emit_trial_number,
         "haptic_policy_warnings": list(result.haptic_policy_warnings),

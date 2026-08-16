@@ -236,6 +236,9 @@ wrist_rotation:
 - `nback_events.csv`
 - `calibration.json`
 - `calibration_timeseries.csv`
+  - `queue_depth`
+  - `queue_depth_at_phase_start`
+  - `latest_received_frame_index`
 - `summary.json`
 - 如果启用 wrist rotation：
   - `wrist_rotation_calibration.json`
@@ -249,6 +252,7 @@ wrist_rotation:
 - `summary.json` 的 wrist rotation 字段
 - `nback_events.csv` 是否符合 post-release 期间的预期行为
 - `calibration_timeseries.csv` 是否显示 Open / C-shape / Pinch 某一段存在跳变或过渡帧
+- `calibration_timeseries.csv` 和 `pinch_timeseries.csv` 的 `queue_depth` 是否在 phase/formal 开始时明显积压
 
 `haptic_events.csv` 新增了用于事后排查调度的字段：
 
@@ -266,6 +270,13 @@ wrist_rotation:
 - `wrist_neutral_gate_passed`：真正发出时是否干净回正。`False` 通常表示 timeout 后仍发。
 - `wrist_neutral_wait_ms`：等待回正的时间。
 - `wrist_lr_class_at_emit` / `wrist_up_down_class_at_emit`：发出瞬间的手腕分类。
+
+`pinch_timeseries.csv` 也记录了 queue 诊断字段：
+
+- `phase`：正式任务中为 `formal`。
+- `queue_depth`：读取当前 frame 前 Python MANUS queue 中等待的 frame 数。
+- `queue_depth_at_phase_start`：formal loop 开始时的 queue 深度。
+- `latest_received_frame_index`：读取当前 frame 前 Python 接收线程已经收到的最新 frame index。
 
 这些字段和 n-back、pinch、wrist 数据使用同一个 `monotonic_ms` 时间系统，可以直接做时间差。
 

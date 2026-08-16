@@ -12,6 +12,7 @@ from typing import Any
 
 PINCH_TIMESERIES_FIELDS = [
     "session_id",
+    "phase",
     "frame_index",
     "wall_time_iso",
     "monotonic_ms",
@@ -27,6 +28,9 @@ PINCH_TIMESERIES_FIELDS = [
     "thumb_node_id",
     "target_finger_node_id",
     "tracker_present",
+    "queue_depth",
+    "queue_depth_at_phase_start",
+    "latest_received_frame_index",
     "note",
 ]
 
@@ -45,6 +49,9 @@ CALIBRATION_TIMESERIES_FIELDS = [
     "thumb_node_id",
     "target_finger_node_id",
     "tracker_present",
+    "queue_depth",
+    "queue_depth_at_phase_start",
+    "latest_received_frame_index",
     "note",
 ]
 
@@ -154,11 +161,16 @@ class DualTaskLogger:
         *,
         calibration: Any,
         zone: str,
+        phase: str = "formal",
+        queue_depth: int | None = None,
+        queue_depth_at_phase_start: int | None = None,
+        latest_received_frame_index: int | None = None,
     ) -> None:
         """Append one pinch sample row aligned to the active calibration."""
 
         row = {
             "session_id": getattr(sample, "session_id", self.session_id),
+            "phase": phase,
             "frame_index": getattr(sample, "frame_index", None),
             "wall_time_iso": getattr(sample, "wall_time_iso", ""),
             "monotonic_ms": getattr(sample, "monotonic_ms", None),
@@ -174,6 +186,9 @@ class DualTaskLogger:
             "thumb_node_id": getattr(sample, "thumb_node_id", None),
             "target_finger_node_id": getattr(sample, "target_finger_node_id", None),
             "tracker_present": getattr(sample, "tracker_present", False),
+            "queue_depth": queue_depth,
+            "queue_depth_at_phase_start": queue_depth_at_phase_start,
+            "latest_received_frame_index": latest_received_frame_index,
             "note": getattr(sample, "note", ""),
         }
         mode = "a" if self._pinch_header_written else "w"
@@ -187,7 +202,15 @@ class DualTaskLogger:
         if bool(getattr(sample, "pinch_valid", False)):
             self.total_valid_pinch_samples += 1
 
-    def write_calibration_sample(self, sample: Any, *, phase: str) -> None:
+    def write_calibration_sample(
+        self,
+        sample: Any,
+        *,
+        phase: str,
+        queue_depth: int | None = None,
+        queue_depth_at_phase_start: int | None = None,
+        latest_received_frame_index: int | None = None,
+    ) -> None:
         """Append one calibration-phase pinch sample row."""
 
         row = {
@@ -204,6 +227,9 @@ class DualTaskLogger:
             "thumb_node_id": getattr(sample, "thumb_node_id", None),
             "target_finger_node_id": getattr(sample, "target_finger_node_id", None),
             "tracker_present": getattr(sample, "tracker_present", False),
+            "queue_depth": queue_depth,
+            "queue_depth_at_phase_start": queue_depth_at_phase_start,
+            "latest_received_frame_index": latest_received_frame_index,
             "note": getattr(sample, "note", ""),
         }
         mode = "a" if self._calibration_header_written else "w"
