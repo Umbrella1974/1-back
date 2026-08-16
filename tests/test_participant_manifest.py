@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from run_pinch_haptic_1back import OperatorAbort
 from run_participant_manifest import (
     load_participant_manifest,
     prepare_session_config,
@@ -142,6 +143,49 @@ def test_manifest_runner_updates_calibration_path_from_session_summary(tmp_path)
     assert second_config["calibration_reuse"]["calibration_in"].endswith(
         "P001_exp2_cal_v02.json"
     )
+
+
+def test_manifest_runner_records_operator_abort_without_traceback(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
+    plan = _write_plan(tmp_path / "motor-plan.yaml", plan_id="motor_plan_1", modality="vibration")
+    manifest_path = _write_manifest(
+        tmp_path / "manifest.yaml",
+        tmp_path=tmp_path,
+        sessions=[
+            {
+                "session_label": "motor_single_01",
+                "order": 1,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+            {
+                "session_label": "motor_single_02",
+                "order": 2,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+        ],
+    )
+    calls = 0
+
+    def fake_runner(config_path: str | Path) -> Path:
+        nonlocal calls
+        calls += 1
+        raise OperatorAbort("operator_aborted")
+
+    run_dir = run_participant_manifest(manifest_path, runner_fn=fake_runner)
+    run_summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert calls == 1
+    assert run_summary["aborted_session_count"] == 1
+    assert run_summary["sessions"][0]["status"] == "aborted"
+    assert len(run_summary["sessions"]) == 1
 
 
 def test_prepare_session_config_derives_reproducible_seeds(tmp_path) -> None:

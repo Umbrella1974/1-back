@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from haptic_plan_config import load_haptic_plan_config
-from run_pinch_haptic_1back import TASK_TYPE_DUAL, TASK_TYPE_SINGLE, run_live_pinch_haptic_1back
+from run_pinch_haptic_1back import (
+    OperatorAbort,
+    TASK_TYPE_DUAL,
+    TASK_TYPE_SINGLE,
+    run_live_pinch_haptic_1back,
+)
 from run_pinch_haptic_dry_run import load_dualtask_config
 from session_seeds import MAX_SEED
 
@@ -138,18 +143,30 @@ def run_participant_manifest(
                 current_calibration_path = Path(saved_calibration)
             elif current_calibration_path is not None:
                 row["calibration_path_after_session"] = str(current_calibration_path)
+        except OperatorAbort as exc:
+            row["status"] = "aborted"
+            row["error"] = str(exc)
+            run_summary["sessions"] = session_rows
+            run_summary["completed_session_count"] = _completed_count(session_rows)
+            run_summary["failed_session_count"] = _failed_count(session_rows)
+            run_summary["aborted_session_count"] = _aborted_count(session_rows)
+            run_summary["end_wall_time_iso"] = _now_iso()
+            _write_json(summary_path, run_summary)
+            return run_dir
         except Exception as exc:
             row["status"] = "failed"
             row["error"] = str(exc)
             run_summary["sessions"] = session_rows
             run_summary["completed_session_count"] = _completed_count(session_rows)
             run_summary["failed_session_count"] = _failed_count(session_rows)
+            run_summary["aborted_session_count"] = _aborted_count(session_rows)
             run_summary["end_wall_time_iso"] = _now_iso()
             _write_json(summary_path, run_summary)
             raise
         run_summary["sessions"] = session_rows
         run_summary["completed_session_count"] = _completed_count(session_rows)
         run_summary["failed_session_count"] = _failed_count(session_rows)
+        run_summary["aborted_session_count"] = _aborted_count(session_rows)
         run_summary["active_calibration_path"] = (
             str(current_calibration_path) if current_calibration_path is not None else ""
         )
@@ -357,6 +374,7 @@ def _base_run_summary(
         "planned_session_count": len(manifest.sessions),
         "completed_session_count": 0,
         "failed_session_count": 0,
+        "aborted_session_count": 0,
         "calibration_path": str(manifest.calibration_path) if manifest.calibration_path else "",
         "active_calibration_path": str(manifest.calibration_path) if manifest.calibration_path else "",
         "calibration_reuse": manifest.calibration_reuse,
@@ -404,6 +422,10 @@ def _completed_count(rows: list[dict[str, Any]]) -> int:
 
 def _failed_count(rows: list[dict[str, Any]]) -> int:
     return sum(1 for row in rows if row.get("status") == "failed")
+
+
+def _aborted_count(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if row.get("status") == "aborted")
 
 
 def _read_session_summary(output_path: str | Path) -> dict[str, Any]:

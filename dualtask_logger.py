@@ -31,6 +31,24 @@ PINCH_TIMESERIES_FIELDS = [
 ]
 
 
+CALIBRATION_TIMESERIES_FIELDS = [
+    "session_id",
+    "phase",
+    "frame_index",
+    "wall_time_iso",
+    "monotonic_ms",
+    "source_timestamp",
+    "source_frame_id",
+    "hand_valid",
+    "pinch_valid",
+    "pinch_distance",
+    "thumb_node_id",
+    "target_finger_node_id",
+    "tracker_present",
+    "note",
+]
+
+
 NBACK_EVENT_FIELDS = [
     "session_id",
     "wall_time_iso",
@@ -78,6 +96,7 @@ class DualTaskOutputPaths:
     wrist_rotation_calibration_json: Path
     wrist_rotation_timeseries_csv: Path
     calibration_json: Path
+    calibration_timeseries_csv: Path
     summary_json: Path
 
     def to_dict(self) -> dict[str, str]:
@@ -106,6 +125,7 @@ class DualTaskLogger:
             wrist_rotation_calibration_json=self.session_dir / "wrist_rotation_calibration.json",
             wrist_rotation_timeseries_csv=self.session_dir / "wrist_rotation_timeseries.csv",
             calibration_json=self.session_dir / "calibration.json",
+            calibration_timeseries_csv=self.session_dir / "calibration_timeseries.csv",
             summary_json=self.session_dir / "summary.json",
         )
         self.total_raw_frames = 0
@@ -116,6 +136,7 @@ class DualTaskLogger:
         self.total_wrist_rotation_valid_samples = 0
         self.total_wrist_rotation_invalid_samples = 0
         self._pinch_header_written = False
+        self._calibration_header_written = False
         self._nback_header_written = False
         self._wrist_rotation_header_written = False
 
@@ -165,6 +186,39 @@ class DualTaskLogger:
         self.total_pinch_samples += 1
         if bool(getattr(sample, "pinch_valid", False)):
             self.total_valid_pinch_samples += 1
+
+    def write_calibration_sample(self, sample: Any, *, phase: str) -> None:
+        """Append one calibration-phase pinch sample row."""
+
+        row = {
+            "session_id": getattr(sample, "session_id", self.session_id),
+            "phase": str(phase),
+            "frame_index": getattr(sample, "frame_index", None),
+            "wall_time_iso": getattr(sample, "wall_time_iso", ""),
+            "monotonic_ms": getattr(sample, "monotonic_ms", None),
+            "source_timestamp": getattr(sample, "source_timestamp", None),
+            "source_frame_id": getattr(sample, "source_frame_id", None),
+            "hand_valid": getattr(sample, "hand_valid", False),
+            "pinch_valid": getattr(sample, "pinch_valid", False),
+            "pinch_distance": getattr(sample, "pinch_distance", None),
+            "thumb_node_id": getattr(sample, "thumb_node_id", None),
+            "target_finger_node_id": getattr(sample, "target_finger_node_id", None),
+            "tracker_present": getattr(sample, "tracker_present", False),
+            "note": getattr(sample, "note", ""),
+        }
+        mode = "a" if self._calibration_header_written else "w"
+        with self.paths.calibration_timeseries_csv.open(
+            mode,
+            newline="",
+            encoding="utf-8",
+        ) as handle:
+            writer = csv.DictWriter(handle, fieldnames=CALIBRATION_TIMESERIES_FIELDS)
+            if not self._calibration_header_written:
+                writer.writeheader()
+                self._calibration_header_written = True
+            writer.writerow(
+                {field: row.get(field, "") for field in CALIBRATION_TIMESERIES_FIELDS}
+            )
 
     def write_nback_event(self, event: Any) -> None:
         """Append one 1-back trial event row."""

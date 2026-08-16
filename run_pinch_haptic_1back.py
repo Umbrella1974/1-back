@@ -84,6 +84,7 @@ class SessionEndPolicy:
     allow_multiple_haptic_trials: bool = False
     finish_active_haptic_before_exit: bool = True
     post_release_recording_ms: float = 0.0
+    single_post_release_recording_ms: float | None = None
     post_release_continue_nback: bool = False
     release_nback_trial_window: tuple[int, int] | None = None
     prerelease_haptic_complete_by_trial: int | None = None
@@ -95,6 +96,10 @@ class SessionEndPolicy:
 class HapticFeedbackDisplayConfig:
     mode: str = "none"
     print_on_emit: bool = True
+
+
+class OperatorAbort(RuntimeError):
+    """Raised when the operator cancels from a command-line prompt."""
 
 
 @dataclass(frozen=True)
@@ -743,7 +748,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                         "[CALIBRATION] quick check failed: "
                         + calibration_quick_check.reason
                     )
-                    input("Press Enter to run a full calibration and save a new version...")
+                    _prompt_enter_or_abort(
+                        "Press Enter to run a full calibration and save a new version..."
+                    )
                 else:
                     print("[CALIBRATION] quick check passed; reusing loaded calibration.")
             if (
@@ -833,7 +840,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 wait_key_name="space",
             )
         else:
-            input("Tactile-only task: press Enter to start the formal tactile session...")
+            _prompt_enter_or_abort(
+                "Tactile-only task: press Enter to start the formal tactile session..."
+            )
         formal_result = _run_live_formal_phase(
             server,
             parser,
@@ -857,6 +866,10 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         )
         total_haptic_events = formal_result.total_haptic_events
         end_reason = formal_result.end_reason
+    except OperatorAbort as exc:
+        errors.append(str(exc))
+        end_reason = "operator_aborted"
+        raise
     except Exception as exc:
         errors.append(str(exc))
         raise
@@ -964,7 +977,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="MANUS pinch+haptic+1-back disabled runner.")
     parser.add_argument("--config", default="dualtask_config.yaml")
     args = parser.parse_args()
-    run_live_pinch_haptic_1back(args.config)
+    try:
+        run_live_pinch_haptic_1back(args.config)
+    except OperatorAbort:
+        print("Operator aborted.")
+        return 130
     return 0
 
 
@@ -979,7 +996,7 @@ def _run_live_pinch_calibration(
     session_id: str,
     tcp_log_state: ManusTcpLogState | None,
 ) -> PinchCalibrationResult:
-    input("Open hand calibration: press Enter, then keep hand open...")
+    _prompt_enter_or_abort("Open hand calibration: press Enter, then keep hand open...")
     open_samples = _collect_live_samples(
         server,
         parser,
@@ -989,7 +1006,10 @@ def _run_live_pinch_calibration(
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
     )
-    input("C-shape calibration: press Enter, then keep the task-ready C-shape posture...")
+    _write_calibration_phase_samples(logger, open_samples, phase="open")
+    _prompt_enter_or_abort(
+        "C-shape calibration: press Enter, then keep the task-ready C-shape posture..."
+    )
     contact_samples = _collect_live_samples(
         server,
         parser,
@@ -999,7 +1019,10 @@ def _run_live_pinch_calibration(
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
     )
-    input("Pinch calibration: press Enter, then pinch thumb and target finger...")
+    _write_calibration_phase_samples(logger, contact_samples, phase="contact")
+    _prompt_enter_or_abort(
+        "Pinch calibration: press Enter, then pinch thumb and target finger..."
+    )
     pinch_samples = _collect_live_samples(
         server,
         parser,
@@ -1009,6 +1032,7 @@ def _run_live_pinch_calibration(
         save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
         tcp_log_state=tcp_log_state,
     )
+    _write_calibration_phase_samples(logger, pinch_samples, phase="pinch")
     return calibrate_from_samples(
         open_samples,
         pinch_samples,
@@ -1153,7 +1177,9 @@ def _run_live_calibration_quick_check(
     tcp_log_state: ManusTcpLogState | None,
     min_valid_frames: int,
 ) -> CalibrationQuickCheckResult:
-    input("Calibration quick check: press Enter, then keep hand open and wrist neutral...")
+    _prompt_enter_or_abort(
+        "Calibration quick check: press Enter, then keep hand open and wrist neutral..."
+    )
     open_samples = _collect_live_samples(
         server,
         parser,
@@ -1345,6 +1371,22 @@ def _ratio_config_float(value: Any, name: str) -> float:
     return result
 
 
+def _prompt_enter_or_abort(prompt: str) -> None:
+    response = input(f"{prompt} [Enter/q] ")
+    if str(response).strip().lower() in {"q", "quit", "exit", "abort"}:
+        raise OperatorAbort("operator_aborted")
+
+
+def _write_calibration_phase_samples(
+    logger: DualTaskLogger,
+    samples: Iterable[Any],
+    *,
+    phase: str,
+) -> None:
+    for sample in samples:
+        logger.write_calibration_sample(sample, phase=phase)
+
+
 def _run_live_wrist_rotation_calibration(
     server: LiveRawStreamServer,
     logger: DualTaskLogger,
@@ -1354,7 +1396,7 @@ def _run_live_wrist_rotation_calibration(
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None = None,
 ) -> WristRotationCalibrationResult:
-    input("Wrist neutral calibration: press Enter, then keep wrist neutral...")
+    _prompt_enter_or_abort("Wrist neutral calibration: press Enter, then keep wrist neutral...")
     print("[WRIST] neutral calibration collecting...")
     neutral = _collect_live_wrist_quaternions(
         server,
@@ -1364,7 +1406,7 @@ def _run_live_wrist_rotation_calibration(
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
     )
-    input("Wrist left calibration: press Enter, then rotate wrist left...")
+    _prompt_enter_or_abort("Wrist left calibration: press Enter, then rotate wrist left...")
     print("[WRIST] left calibration collecting...")
     left = _collect_live_wrist_quaternions(
         server,
@@ -1374,7 +1416,7 @@ def _run_live_wrist_rotation_calibration(
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
     )
-    input("Wrist right calibration: press Enter, then rotate wrist right...")
+    _prompt_enter_or_abort("Wrist right calibration: press Enter, then rotate wrist right...")
     print("[WRIST] right calibration collecting...")
     right = _collect_live_wrist_quaternions(
         server,
@@ -1387,7 +1429,7 @@ def _run_live_wrist_rotation_calibration(
     up: list[tuple[float, float, float, float]] = []
     down: list[tuple[float, float, float, float]] = []
     if config.enable_up_down:
-        input("Wrist up calibration: press Enter, then move wrist up...")
+        _prompt_enter_or_abort("Wrist up calibration: press Enter, then move wrist up...")
         print("[WRIST] up calibration collecting...")
         up = _collect_live_wrist_quaternions(
             server,
@@ -1397,7 +1439,7 @@ def _run_live_wrist_rotation_calibration(
             save_raw_frames=save_raw_frames,
             tcp_log_state=tcp_log_state,
         )
-        input("Wrist down calibration: press Enter, then move wrist down...")
+        _prompt_enter_or_abort("Wrist down calibration: press Enter, then move wrist down...")
         print("[WRIST] down calibration collecting...")
         down = _collect_live_wrist_quaternions(
             server,
@@ -1836,6 +1878,11 @@ def _session_end_policy_from_config(session_config: dict[str, Any]) -> SessionEn
             session_config.get("finish_active_haptic_before_exit", True)
         ),
         post_release_recording_ms=float(session_config.get("post_release_recording_ms", 0)),
+        single_post_release_recording_ms=(
+            float(session_config["single_post_release_recording_ms"])
+            if session_config.get("single_post_release_recording_ms") is not None
+            else None
+        ),
         post_release_continue_nback=bool(session_config.get("post_release_continue_nback", False)),
         release_nback_trial_window=release_window,
         prerelease_haptic_complete_by_trial=prerelease_deadline,
@@ -1932,6 +1979,11 @@ def _session_end_policy_for_task(
         return policy
     return replace(
         policy,
+        post_release_recording_ms=(
+            policy.single_post_release_recording_ms
+            if policy.single_post_release_recording_ms is not None
+            else policy.post_release_recording_ms
+        ),
         post_release_continue_nback=False,
         finish_nback_after_haptic_release=False,
     )
@@ -1994,6 +2046,7 @@ def _haptic_end_summary_fields(
             "allow_multiple_haptic_trials": policy.allow_multiple_haptic_trials,
             "finish_active_haptic_before_exit": policy.finish_active_haptic_before_exit,
             "post_release_recording_ms": policy.post_release_recording_ms,
+            "single_post_release_recording_ms": policy.single_post_release_recording_ms,
             "post_release_continue_nback": policy.post_release_continue_nback,
             "release_nback_trial_window": _list_or_none(policy.release_nback_trial_window),
             "prerelease_haptic_complete_by_trial": policy.prerelease_haptic_complete_by_trial,
@@ -2015,6 +2068,7 @@ def _haptic_end_summary_fields(
         "allow_multiple_haptic_trials": result.allow_multiple_haptic_trials,
         "finish_active_haptic_before_exit": result.finish_active_haptic_before_exit,
         "post_release_recording_ms": result.post_release_recording_ms,
+        "single_post_release_recording_ms": policy.single_post_release_recording_ms,
         "post_release_continue_nback": result.post_release_continue_nback,
         "release_nback_trial_window": _list_or_none(result.release_nback_trial_window),
         "prerelease_haptic_complete_by_trial": result.prerelease_haptic_complete_by_trial,

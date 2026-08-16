@@ -60,6 +60,33 @@ def test_dualtask_logger_writes_pinch_timeseries_csv(tmp_path) -> None:
     assert logger.total_valid_pinch_samples == 1
 
 
+def test_dualtask_logger_writes_calibration_timeseries_csv(tmp_path) -> None:
+    logger = DualTaskLogger(session_id="session-a", output_root=tmp_path)
+    sample = SimpleNamespace(
+        session_id="session-a",
+        frame_index=1,
+        wall_time_iso="2026-01-01T00:00:00+00:00",
+        monotonic_ms=1000.0,
+        source_timestamp=123,
+        source_frame_id=7,
+        hand_valid=True,
+        pinch_valid=True,
+        pinch_distance=0.08,
+        thumb_node_id=4,
+        target_finger_node_id=14,
+        tracker_present=False,
+        note="",
+    )
+
+    logger.write_calibration_sample(sample, phase="open")
+
+    with logger.paths.calibration_timeseries_csv.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows[0]["session_id"] == "session-a"
+    assert rows[0]["phase"] == "open"
+    assert rows[0]["pinch_distance"] == "0.08"
+
+
 def test_dualtask_logger_writes_calibration_and_summary_json(tmp_path) -> None:
     logger = DualTaskLogger(session_id="session-a", output_root=tmp_path)
 
@@ -80,4 +107,6 @@ def test_dualtask_logger_writes_calibration_and_summary_json(tmp_path) -> None:
     assert summary["session_id"] == "session-a"
     assert summary["participant_id"] == "p01"
     assert summary["output_files"]["haptic_events_csv"].endswith("haptic_events.csv")
-
+    assert summary["output_files"]["calibration_timeseries_csv"].endswith(
+        "calibration_timeseries.csv"
+    )

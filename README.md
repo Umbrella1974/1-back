@@ -235,6 +235,7 @@ wrist_rotation:
 - `haptic_events.csv`
 - `nback_events.csv`
 - `calibration.json`
+- `calibration_timeseries.csv`
 - `summary.json`
 - 如果启用 wrist rotation：
   - `wrist_rotation_calibration.json`
@@ -247,6 +248,7 @@ wrist_rotation:
 - `summary.json` 的 `session_seed`、`haptic_seed`、`nback_seed`、`haptic_plan_id` 和 `haptic_plan_random_seed`
 - `summary.json` 的 wrist rotation 字段
 - `nback_events.csv` 是否符合 post-release 期间的预期行为
+- `calibration_timeseries.csv` 是否显示 Open / C-shape / Pinch 某一段存在跳变或过渡帧
 
 `haptic_events.csv` 新增了用于事后排查调度的字段：
 
@@ -404,6 +406,22 @@ calibration_reuse:
 - `summary.json` 会记录 `calibration_id`、`calibration_loaded_from_bundle`、`calibration_bundle_path`、`calibration_saved_path` 和 quick check 的距离/腕部检查字段。
 
 第一版 quick check 没有固定 Open/C/Pinch 的人为百分比阈值；open 检查使用旧 Open reference 的 MAD 倍数。`open_mad_multiplier` 和 `wrist_neutral_min_ratio` 目前是 config 参数，下一批 pilot 后再根据真实漂移分布决定是否调整。
+
+命令行 prompt 中止：
+
+- 在 calibration、quick check、wrist calibration、tactile-only start 等命令行等待阶段，可以输入 `q` / `quit` / `exit` / `abort` 后回车。
+- 当前 session 会记录 `operator_aborted`，participant manifest 会把该 session 标记为 `aborted` 并停止后续 session。
+- 这个机制不影响正式 1-back 窗口里的反应键。
+
+Single release 后记录：
+
+```yaml
+session:
+  post_release_recording_ms: 3000
+  single_post_release_recording_ms: 6000
+```
+
+`single_post_release_recording_ms` 只覆盖 tactile-only / single session。`dual` session 仍使用原来的 `post_release_recording_ms` 和 `finish_nback_after_haptic_release` 逻辑。
 
 Participant manifest：
 

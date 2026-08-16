@@ -13,10 +13,15 @@ from nback_dualtask_runner import NBackConfig, NBackTimeline
 from pinch_calibration import PinchCalibrationResult
 from run_pinch_haptic_1back import (
     NBackResponseInput,
+    OperatorAbort,
+    TASK_TYPE_SINGLE,
     _append_no_haptic_event_warnings,
     _bool_config_value,
     _calibration_summary_fields,
+    _prompt_enter_or_abort,
     _pygame_key_constant,
+    _session_end_policy_for_task,
+    _session_end_policy_from_config,
     _should_enter_formal_phase,
     _zone_summary_fields,
     run_pinch_haptic_1back_core,
@@ -138,6 +143,27 @@ def test_bool_config_value_accepts_yaml_and_string_booleans(
 def test_bool_config_value_rejects_ambiguous_values() -> None:
     with pytest.raises(ValueError, match="example.flag must be true or false"):
         _bool_config_value("maybe", "example.flag")
+
+
+def test_prompt_enter_or_abort_accepts_q(monkeypatch) -> None:
+    monkeypatch.setattr("builtins.input", lambda prompt: "q")
+
+    with pytest.raises(OperatorAbort, match="operator_aborted"):
+        _prompt_enter_or_abort("Prompt")
+
+
+def test_single_post_release_recording_overrides_only_single_task() -> None:
+    policy = _session_end_policy_from_config(
+        {
+            "post_release_recording_ms": 3000,
+            "single_post_release_recording_ms": 6000,
+        }
+    )
+
+    single_policy = _session_end_policy_for_task(policy, TASK_TYPE_SINGLE)
+
+    assert policy.post_release_recording_ms == 3000
+    assert single_policy.post_release_recording_ms == 6000
 
 
 def test_failed_calibration_summary_blocks_formal_phase() -> None:
