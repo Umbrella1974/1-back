@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from learn_haptic_patterns import load_learning_session, sender_config_from_learning_config
+from learn_haptic_patterns import (
+    _learning_log_row,
+    load_learning_session,
+    sender_config_from_learning_config,
+)
 from run_pinch_haptic_dry_run import load_dualtask_config
 
 
@@ -81,3 +85,22 @@ def test_learning_sender_config_matches_only_matrix_tcp_flags() -> None:
     assert config.matrix_enabled is True
     assert config.matrix_tcp_enabled is True
     assert config.matrix_required is True
+
+
+def test_learning_log_row_records_play_count_and_phase() -> None:
+    session = load_learning_session("only-motor.yaml", mode_name="only-motor")
+    event = session.events[0]
+
+    row = _learning_log_row(
+        session=session,
+        event=event,
+        phase="ordered",
+        play_index=3,
+        status="played",
+    )
+
+    assert row["mode_name"] == "only-motor"
+    assert row["phase"] == "ordered"
+    assert row["play_index"] == 3
+    assert row["event_name"] == event.name
+    assert row["status"] == "played"

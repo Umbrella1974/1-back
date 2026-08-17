@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -36,6 +38,22 @@ EVENT_LABELS = {
     "up": "up /上",
     "down": "down /下",
 }
+
+LEARNING_LOG_FIELDS = [
+    "timestamp",
+    "session_id",
+    "mode_name",
+    "phase",
+    "play_index",
+    "event_name",
+    "label",
+    "modality",
+    "command_label",
+    "command_id",
+    "channel_list",
+    "matrix_sequence_step_count",
+    "status",
+]
 
 
 @dataclass(frozen=True)
@@ -198,8 +216,19 @@ def _run_session(session: LearningSession) -> bool:
         print(f"Learning templates: {len(session.plan_paths)}")
     print(_sender_status_text(session.sender_config))
     sender = SimpleHapticSender(session.sender_config, session_id=f"learn_{session.mode_name}")
+    log_path = _learning_log_path(session.mode_name)
+    play_index = 0
     last_event: HapticPlanEvent | None = None
     try:
+        play_index, last_event, quit_requested = _run_ordered_learning(
+            session,
+            sender,
+            log_path=log_path,
+            start_play_index=play_index,
+        )
+        if quit_requested:
+            print(f"Learning log: {log_path}")
+            return True
         while True:
             _print_event_menu(session.events)
             choice = input("> ").strip().lower()
@@ -211,16 +240,88 @@ def _run_session(session: LearningSession) -> bool:
                 if last_event is None:
                     print("No previous haptic.")
                     continue
-                _play_event(sender, last_event)
+                play_index += 1
+                _play_event(
+                    sender,
+                    last_event,
+                    log_path=log_path,
+                    session=session,
+                    phase="free_replay",
+                    play_index=play_index,
+                )
                 continue
             if not choice.isdigit() or not 1 <= int(choice) <= len(session.events):
                 print("Invalid choice.")
                 continue
             last_event = session.events[int(choice) - 1]
-            _play_event(sender, last_event)
+            play_index += 1
+            _play_event(
+                sender,
+                last_event,
+                log_path=log_path,
+                session=session,
+                phase="free_select",
+                play_index=play_index,
+            )
     finally:
         sender.close()
     return False
+
+
+def _run_ordered_learning(
+    session: LearningSession,
+    sender: SimpleHapticSender,
+    *,
+    log_path: Path,
+    start_play_index: int = 0,
+) -> tuple[int, HapticPlanEvent | None, bool]:
+    print("\nOrdered learning / 顺序学习")
+    print("Press Enter to play each cue, r to replay current cue, s to skip, q to quit.")
+    play_index = int(start_play_index)
+    last_event: HapticPlanEvent | None = None
+    for index, event in enumerate(session.events, start=1):
+        while True:
+            choice = input(f"[{index}/{len(session.events)}] {_event_menu_label(event)} > ").strip().lower()
+            if choice == "q":
+                return play_index, last_event, True
+            if choice == "s":
+                _append_learning_log(
+                    log_path,
+                    session=session,
+                    event=event,
+                    phase="ordered_skip",
+                    play_index=play_index,
+                    status="skipped",
+                )
+                break
+            if choice == "r":
+                play_index += 1
+                last_event = event
+                _play_event(
+                    sender,
+                    event,
+                    log_path=log_path,
+                    session=session,
+                    phase="ordered_replay",
+                    play_index=play_index,
+                )
+                continue
+            if choice:
+                print("Invalid choice.")
+                continue
+            play_index += 1
+            last_event = event
+            _play_event(
+                sender,
+                event,
+                log_path=log_path,
+                session=session,
+                phase="ordered",
+                play_index=play_index,
+            )
+            break
+    print(f"Ordered learning complete. Log: {log_path}")
+    return play_index, last_event, False
 
 
 def _print_event_menu(events: tuple[HapticPlanEvent, ...]) -> None:
@@ -244,8 +345,49 @@ def _event_menu_label(event: HapticPlanEvent) -> str:
     return f"{base} ({detail})"
 
 
-def _play_event(sender: SimpleHapticSender, event: HapticPlanEvent) -> None:
+def _play_event(
+    sender: SimpleHapticSender,
+    event: HapticPlanEvent,
+    *,
+    log_path: Path | None = None,
+    session: LearningSession | None = None,
+    phase: str = "",
+    play_index: int = 0,
+) -> None:
     print(f"\nPlaying: {_event_menu_label(event)}")
+    start_ms = time.monotonic() * 1000.0
+    status = "played"
+    try:
+        sender.record_scheduled_event(
+            _scheduled_event_for_learning(
+                event,
+                event_index=len(sender.records),
+                start_ms=start_ms,
+            )
+        )
+        if event.modality == "matrix" and event.matrix_sequence:
+            time.sleep(float(event.matrix_sequence[-1].offset_ms) / 1000.0)
+        if event.modality == "vibration":
+            sender.poll_due_control_commands(start_ms + float(event.duration_ms or 0))
+    except Exception:
+        status = "send_failed"
+        raise
+    finally:
+        if log_path is not None and session is not None:
+            _append_learning_log(
+                log_path,
+                session=session,
+                event=event,
+                phase=phase,
+                play_index=play_index,
+                status=status,
+            )
+    print("Done.")
+
+
+def play_event_once_for_test(sender: SimpleHapticSender, event: HapticPlanEvent) -> None:
+    """Replay one haptic event for non-interactive callers."""
+
     start_ms = time.monotonic() * 1000.0
     sender.record_scheduled_event(
         _scheduled_event_for_learning(
@@ -258,7 +400,67 @@ def _play_event(sender: SimpleHapticSender, event: HapticPlanEvent) -> None:
         time.sleep(float(event.matrix_sequence[-1].offset_ms) / 1000.0)
     if event.modality == "vibration":
         sender.poll_due_control_commands(start_ms + float(event.duration_ms or 0))
-    print("Done.")
+
+
+def _learning_log_path(mode_name: str) -> Path:
+    root = Path("outputs") / "haptic_learning_logs"
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return root / f"learn_{_safe_text(mode_name)}_{stamp}.csv"
+
+
+def _append_learning_log(
+    path: Path,
+    *,
+    session: LearningSession,
+    event: HapticPlanEvent,
+    phase: str,
+    play_index: int,
+    status: str,
+) -> None:
+    row = _learning_log_row(
+        session=session,
+        event=event,
+        phase=phase,
+        play_index=play_index,
+        status=status,
+    )
+    mode = "a" if path.exists() else "w"
+    with path.open(mode, newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=LEARNING_LOG_FIELDS)
+        if mode == "w":
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def _learning_log_row(
+    *,
+    session: LearningSession,
+    event: HapticPlanEvent,
+    phase: str,
+    play_index: int,
+    status: str,
+) -> dict[str, Any]:
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "session_id": f"learn_{session.mode_name}",
+        "mode_name": session.mode_name,
+        "phase": phase,
+        "play_index": int(play_index),
+        "event_name": event.name,
+        "label": EVENT_LABELS.get(event.name, event.name),
+        "modality": event.modality,
+        "command_label": event.command_label or "",
+        "command_id": event.command_id if event.command_id is not None else "",
+        "channel_list": list(event.channel_list or ()),
+        "matrix_sequence_step_count": len(event.matrix_sequence or ()),
+        "status": status,
+    }
+
+
+def _safe_text(value: str) -> str:
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    return "".join(ch if ch in allowed else "_" for ch in str(value)) or "session"
 
 
 def _scheduled_event_for_learning(
