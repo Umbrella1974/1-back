@@ -93,12 +93,16 @@ def test_learning_log_row_records_play_count_and_phase() -> None:
 
     row = _learning_log_row(
         session=session,
+        participant_id="p01",
+        session_id="learn-p01",
         event=event,
         phase="ordered",
         play_index=3,
         status="played",
     )
 
+    assert row["participant_id"] == "p01"
+    assert row["session_id"] == "learn-p01"
     assert row["mode_name"] == "only-motor"
     assert row["phase"] == "ordered"
     assert row["play_index"] == 3

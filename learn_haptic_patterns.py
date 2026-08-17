@@ -42,6 +42,7 @@ EVENT_LABELS = {
 LEARNING_LOG_FIELDS = [
     "timestamp",
     "session_id",
+    "participant_id",
     "mode_name",
     "phase",
     "play_index",
@@ -71,17 +72,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Learn and replay haptic patterns.")
     parser.add_argument("--config", default=None, help="Run one config directly.")
     parser.add_argument("--mode", choices=sorted(MODE_CONFIGS), default=None)
+    parser.add_argument("--participant-id", default=None)
     args = parser.parse_args()
+    participant_id = _prompt_participant_id(args.participant_id)
 
     if args.config:
         config_path = Path(args.config)
         mode_name = args.mode or _mode_name_for_config_path(config_path)
-        _run_session(load_learning_session(config_path, mode_name=mode_name))
+        _run_session(load_learning_session(config_path, mode_name=mode_name), participant_id=participant_id)
         return 0
     if args.mode:
-        _run_session(load_learning_session(Path(MODE_CONFIGS[args.mode]), mode_name=args.mode))
+        _run_session(
+            load_learning_session(Path(MODE_CONFIGS[args.mode]), mode_name=args.mode),
+            participant_id=participant_id,
+        )
         return 0
-    _run_mode_menu()
+    _run_mode_menu(participant_id=participant_id)
     return 0
 
 
@@ -190,7 +196,7 @@ def sender_config_from_learning_config(config: dict[str, Any]) -> SimpleHapticSe
     )
 
 
-def _run_mode_menu() -> None:
+def _run_mode_menu(*, participant_id: str) -> None:
     choices = list(MODE_CONFIGS)
     while True:
         print("\nSelect learning mode:")
@@ -204,19 +210,23 @@ def _run_mode_menu() -> None:
             print("Invalid choice.")
             continue
         mode = choices[int(choice) - 1]
-        if _run_session(load_learning_session(Path(MODE_CONFIGS[mode]), mode_name=mode)):
+        if _run_session(
+            load_learning_session(Path(MODE_CONFIGS[mode]), mode_name=mode),
+            participant_id=participant_id,
+        ):
             return
 
 
-def _run_session(session: LearningSession) -> bool:
+def _run_session(session: LearningSession, *, participant_id: str) -> bool:
     print(f"\nMode: {session.mode_name}")
     print(f"Config: {session.config_path}")
     print(f"Plan: {session.plan_path} ({session.plan.plan_id})")
     if len(session.plan_paths) > 1:
         print(f"Learning templates: {len(session.plan_paths)}")
     print(_sender_status_text(session.sender_config))
-    sender = SimpleHapticSender(session.sender_config, session_id=f"learn_{session.mode_name}")
-    log_path = _learning_log_path(session.mode_name)
+    session_id = _learning_session_id(participant_id, session.mode_name)
+    sender = SimpleHapticSender(session.sender_config, session_id=session_id)
+    log_path = _learning_log_path(participant_id, session.mode_name)
     play_index = 0
     last_event: HapticPlanEvent | None = None
     try:
@@ -224,6 +234,8 @@ def _run_session(session: LearningSession) -> bool:
             session,
             sender,
             log_path=log_path,
+            participant_id=participant_id,
+            session_id=session_id,
             start_play_index=play_index,
         )
         if quit_requested:
@@ -246,6 +258,8 @@ def _run_session(session: LearningSession) -> bool:
                     last_event,
                     log_path=log_path,
                     session=session,
+                    participant_id=participant_id,
+                    session_id=session_id,
                     phase="free_replay",
                     play_index=play_index,
                 )
@@ -260,6 +274,8 @@ def _run_session(session: LearningSession) -> bool:
                 last_event,
                 log_path=log_path,
                 session=session,
+                participant_id=participant_id,
+                session_id=session_id,
                 phase="free_select",
                 play_index=play_index,
             )
@@ -273,6 +289,8 @@ def _run_ordered_learning(
     sender: SimpleHapticSender,
     *,
     log_path: Path,
+    participant_id: str,
+    session_id: str,
     start_play_index: int = 0,
 ) -> tuple[int, HapticPlanEvent | None, bool]:
     print("\nOrdered learning / 顺序学习")
@@ -288,6 +306,8 @@ def _run_ordered_learning(
                 _append_learning_log(
                     log_path,
                     session=session,
+                    participant_id=participant_id,
+                    session_id=session_id,
                     event=event,
                     phase="ordered_skip",
                     play_index=play_index,
@@ -302,6 +322,8 @@ def _run_ordered_learning(
                     event,
                     log_path=log_path,
                     session=session,
+                    participant_id=participant_id,
+                    session_id=session_id,
                     phase="ordered_replay",
                     play_index=play_index,
                 )
@@ -316,6 +338,8 @@ def _run_ordered_learning(
                 event,
                 log_path=log_path,
                 session=session,
+                participant_id=participant_id,
+                session_id=session_id,
                 phase="ordered",
                 play_index=play_index,
             )
@@ -351,6 +375,8 @@ def _play_event(
     *,
     log_path: Path | None = None,
     session: LearningSession | None = None,
+    participant_id: str = "",
+    session_id: str = "",
     phase: str = "",
     play_index: int = 0,
 ) -> None:
@@ -377,6 +403,8 @@ def _play_event(
             _append_learning_log(
                 log_path,
                 session=session,
+                participant_id=participant_id,
+                session_id=session_id,
                 event=event,
                 phase=phase,
                 play_index=play_index,
@@ -402,17 +430,19 @@ def play_event_once_for_test(sender: SimpleHapticSender, event: HapticPlanEvent)
         sender.poll_due_control_commands(start_ms + float(event.duration_ms or 0))
 
 
-def _learning_log_path(mode_name: str) -> Path:
+def _learning_log_path(participant_id: str, mode_name: str) -> Path:
     root = Path("outputs") / "haptic_learning_logs"
     root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return root / f"learn_{_safe_text(mode_name)}_{stamp}.csv"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return root / f"learn_{_safe_text(participant_id)}_{_safe_text(mode_name)}_{stamp}.csv"
 
 
 def _append_learning_log(
     path: Path,
     *,
     session: LearningSession,
+    participant_id: str,
+    session_id: str,
     event: HapticPlanEvent,
     phase: str,
     play_index: int,
@@ -420,6 +450,8 @@ def _append_learning_log(
 ) -> None:
     row = _learning_log_row(
         session=session,
+        participant_id=participant_id,
+        session_id=session_id,
         event=event,
         phase=phase,
         play_index=play_index,
@@ -436,6 +468,8 @@ def _append_learning_log(
 def _learning_log_row(
     *,
     session: LearningSession,
+    participant_id: str = "",
+    session_id: str = "",
     event: HapticPlanEvent,
     phase: str,
     play_index: int,
@@ -443,7 +477,8 @@ def _learning_log_row(
 ) -> dict[str, Any]:
     return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "session_id": f"learn_{session.mode_name}",
+        "session_id": session_id or _learning_session_id(participant_id, session.mode_name),
+        "participant_id": participant_id,
         "mode_name": session.mode_name,
         "phase": phase,
         "play_index": int(play_index),
@@ -461,6 +496,18 @@ def _learning_log_row(
 def _safe_text(value: str) -> str:
     allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
     return "".join(ch if ch in allowed else "_" for ch in str(value)) or "session"
+
+
+def _prompt_participant_id(value: str | None = None) -> str:
+    if value is not None and str(value).strip():
+        return _safe_text(str(value).strip())
+    entered = input("Participant ID / 参与者ID（可直接回车 anonymous）: ").strip()
+    return _safe_text(entered or "anonymous")
+
+
+def _learning_session_id(participant_id: str, mode_name: str) -> str:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return f"learn_{_safe_text(participant_id)}_{_safe_text(mode_name)}_{stamp}"
 
 
 def _scheduled_event_for_learning(
