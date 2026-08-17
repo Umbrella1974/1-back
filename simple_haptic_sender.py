@@ -123,6 +123,10 @@ class SimpleHapticSenderConfig:
     matrix_port: int = 12345
     vibration_connect_timeout_s: float = 2.0
     vibration_send_timeout_s: float = 0.2
+    vibration_handshake_enabled: bool = False
+    vibration_handshake_command: str = "PING"
+    vibration_handshake_expected_response: str = "OK"
+    vibration_handshake_timeout_s: float = 1.0
     matrix_connect_timeout_s: float = 2.0
     matrix_send_timeout_s: float = 0.2
     max_queue_size: int = 128
@@ -138,6 +142,7 @@ class SimpleHapticSenderConfig:
             "disabled_mode",
             "vibration_tcp_enabled",
             "vibration_required",
+            "vibration_handshake_enabled",
             "matrix_tcp_enabled",
             "matrix_required",
             "matrix_latest_only",
@@ -151,6 +156,7 @@ class SimpleHapticSenderConfig:
         for name in (
             "vibration_connect_timeout_s",
             "vibration_send_timeout_s",
+            "vibration_handshake_timeout_s",
             "matrix_connect_timeout_s",
             "matrix_send_timeout_s",
         ):
@@ -560,6 +566,28 @@ class SimpleHapticSender:
             self._matrix_worker.stop()
             self._matrix_worker = None
 
+    def tcp_failure_records(self) -> list[HapticEventRecord]:
+        """Return real-TCP records that failed after queueing or send."""
+
+        return [
+            record
+            for record in self.records
+            if record.tcp_enabled
+            and (
+                record.send_status
+                in {
+                    "send_failed",
+                    "not_connected",
+                    "queue_full",
+                    "not_sent",
+                }
+                or record.tcp_success is False
+            )
+        ]
+
+    def has_tcp_failure(self) -> bool:
+        return bool(self.tcp_failure_records())
+
     def _record_event(
         self,
         event_name: str,
@@ -786,6 +814,10 @@ class SimpleHapticSender:
             connect_timeout_s=self.config.vibration_connect_timeout_s,
             send_timeout_s=self.config.vibration_send_timeout_s,
             max_queue_size=self.config.max_queue_size,
+            handshake_enabled=self.config.vibration_handshake_enabled,
+            handshake_command=self.config.vibration_handshake_command,
+            handshake_expected_response=self.config.vibration_handshake_expected_response,
+            handshake_timeout_s=self.config.vibration_handshake_timeout_s,
             socket_factory=self.config.vibration_socket_factory,
         )
         try:

@@ -44,12 +44,20 @@ class VibrationTcpLineWorker:
         connect_timeout_s: float,
         send_timeout_s: float,
         max_queue_size: int,
+        handshake_enabled: bool = False,
+        handshake_command: str = "PING",
+        handshake_expected_response: str = "OK",
+        handshake_timeout_s: float = 1.0,
         socket_factory: Any = socket.create_connection,
     ) -> None:
         self.host = host
         self.port = int(port)
         self.connect_timeout_s = float(connect_timeout_s)
         self.send_timeout_s = float(send_timeout_s)
+        self.handshake_enabled = bool(handshake_enabled)
+        self.handshake_command = str(handshake_command or "PING").strip()
+        self.handshake_expected_response = str(handshake_expected_response or "OK").strip()
+        self.handshake_timeout_s = float(handshake_timeout_s)
         self.socket_factory = socket_factory
         self._queue: queue.Queue[VibrationSendTask] = queue.Queue(
             maxsize=int(max_queue_size)
@@ -71,8 +79,16 @@ class VibrationTcpLineWorker:
             )
             if hasattr(sock, "settimeout"):
                 sock.settimeout(self.send_timeout_s)
+            if self.handshake_enabled:
+                self._perform_handshake(sock)
+                if hasattr(sock, "settimeout"):
+                    sock.settimeout(self.send_timeout_s)
         except Exception as exc:  # pragma: no cover - exact socket exceptions vary
             self.connect_error = str(exc)
+            try:
+                sock.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
             raise VibrationHapticConnectionError(
                 f"vibration haptic connect failed: {self.host}:{self.port}: {exc}"
             ) from exc
@@ -87,6 +103,28 @@ class VibrationTcpLineWorker:
                 daemon=True,
             )
             self._thread.start()
+
+    def _perform_handshake(self, sock: Any) -> None:
+        if not self.handshake_command:
+            raise VibrationHapticConnectionError("empty vibration handshake command")
+        if hasattr(sock, "settimeout"):
+            sock.settimeout(self.handshake_timeout_s)
+        payload = (self.handshake_command + "\n").encode("ascii")
+        sock.sendall(payload)
+        response = b""
+        deadline = time.monotonic() + max(0.0, self.handshake_timeout_s)
+        while b"\n" not in response and len(response) < 512:
+            if self.handshake_timeout_s > 0 and time.monotonic() > deadline:
+                raise VibrationHapticConnectionError("vibration handshake timed out")
+            chunk = sock.recv(128)
+            if chunk == b"":
+                raise VibrationHapticConnectionError("vibration handshake connection closed")
+            response += bytes(chunk)
+        text = response.decode("utf-8", errors="replace").strip()
+        if self.handshake_expected_response and self.handshake_expected_response not in text:
+            raise VibrationHapticConnectionError(
+                "vibration handshake unexpected response: " + text
+            )
 
     def submit(
         self,

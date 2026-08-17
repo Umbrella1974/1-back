@@ -183,6 +183,19 @@ def sender_config_from_learning_config(config: dict[str, Any]) -> SimpleHapticSe
         vibration_required=vibration_tcp_enabled,
         vibration_host=str(vibration_tcp_config.get("host", "127.0.0.1")),
         vibration_port=int(vibration_tcp_config.get("port", 12346)),
+        vibration_handshake_enabled=_bool_config_value(
+            vibration_tcp_config.get("handshake_enabled", True),
+            "vibration_tcp.handshake_enabled",
+        ),
+        vibration_handshake_command=str(
+            vibration_tcp_config.get("handshake_command", "PING")
+        ),
+        vibration_handshake_expected_response=str(
+            vibration_tcp_config.get("handshake_expected_response", "OK")
+        ),
+        vibration_handshake_timeout_s=float(
+            vibration_tcp_config.get("handshake_timeout_s", 1.0)
+        ),
         matrix_tcp_enabled=matrix_tcp_enabled,
         matrix_required=matrix_tcp_enabled,
         matrix_host=str(matrix_tcp_config.get("host", "127.0.0.1")),

@@ -78,21 +78,42 @@ def run_participant_manifest(
     manifest_path: str | Path,
     *,
     validate_only: bool = False,
+    start_order: int | None = None,
+    only_order: int | None = None,
+    calibration_in: str | Path | None = None,
     runner_fn: Callable[[str | Path], Path] = run_live_pinch_haptic_1back,
 ) -> Path:
+    if start_order is not None and only_order is not None:
+        raise ValueError("--start-order and --only-order cannot be used together.")
     manifest = load_participant_manifest(manifest_path)
     validation = validate_participant_manifest(manifest)
     if not validation.passed:
         raise ValueError("manifest validation failed:\n" + "\n".join(validation.errors))
+    selected_sessions = _select_manifest_sessions(
+        manifest.sessions,
+        start_order=start_order,
+        only_order=only_order,
+    )
+    if not selected_sessions:
+        raise ValueError("no manifest sessions selected.")
 
     run_dir = manifest.output_root / manifest.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     summary_path = run_dir / "run_summary.json"
     config_dir = run_dir / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
-    current_calibration_path = manifest.calibration_path
+    current_calibration_path = (
+        Path(calibration_in) if calibration_in is not None else manifest.calibration_path
+    )
     session_rows: list[dict[str, Any]] = []
     run_summary = _base_run_summary(manifest, validation)
+    run_summary["selected_start_order"] = start_order
+    run_summary["selected_only_order"] = only_order
+    run_summary["resume_calibration_in"] = str(calibration_in or "")
+    run_summary["selected_session_count"] = len(selected_sessions)
+    run_summary["active_calibration_path"] = (
+        str(current_calibration_path) if current_calibration_path is not None else ""
+    )
     _write_json(summary_path, run_summary)
 
     if validate_only:
@@ -104,7 +125,7 @@ def run_participant_manifest(
                 config_dir=config_dir,
                 current_calibration_path=current_calibration_path,
             )
-            for session in manifest.sessions
+            for session in selected_sessions
         ]
         run_summary["validate_only"] = True
         run_summary["prepared_session_count"] = len(prepared)
@@ -112,7 +133,7 @@ def run_participant_manifest(
         _write_json(summary_path, run_summary)
         return run_dir
 
-    for session in manifest.sessions:
+    for session in selected_sessions:
         prepared = prepare_session_config(
             manifest,
             session,
@@ -138,6 +159,16 @@ def run_participant_manifest(
                 False,
             )
             row["calibration_saved_path"] = session_summary.get("calibration_saved_path", "")
+            if _session_haptic_tcp_failed(session_summary):
+                row["status"] = "failed"
+                row["error"] = "haptic_tcp_failed"
+                run_summary["sessions"] = session_rows
+                run_summary["completed_session_count"] = _completed_count(session_rows)
+                run_summary["failed_session_count"] = _failed_count(session_rows)
+                run_summary["aborted_session_count"] = _aborted_count(session_rows)
+                run_summary["end_wall_time_iso"] = _now_iso()
+                _write_json(summary_path, run_summary)
+                return run_dir
             saved_calibration = str(session_summary.get("calibration_saved_path", "") or "")
             if saved_calibration:
                 current_calibration_path = Path(saved_calibration)
@@ -218,6 +249,19 @@ def load_participant_manifest(path: str | Path) -> ParticipantManifest:
         calibration_quick_check=bool(calibration_payload.get("quick_check", True)),
         sessions=tuple(sorted(sessions, key=lambda item: item.order)),
     )
+
+
+def _select_manifest_sessions(
+    sessions: tuple[ManifestSession, ...],
+    *,
+    start_order: int | None,
+    only_order: int | None,
+) -> tuple[ManifestSession, ...]:
+    if only_order is not None:
+        return tuple(session for session in sessions if session.order == int(only_order))
+    if start_order is not None:
+        return tuple(session for session in sessions if session.order >= int(start_order))
+    return tuple(sessions)
 
 
 def validate_participant_manifest(manifest: ParticipantManifest) -> ManifestValidationResult:
@@ -436,6 +480,12 @@ def _read_session_summary(output_path: str | Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _session_haptic_tcp_failed(summary: dict[str, Any]) -> bool:
+    return bool(summary.get("haptic_tcp_failed")) or str(
+        summary.get("end_reason", "")
+    ) == "haptic_tcp_failed"
+
+
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:
     try:
         import yaml
@@ -499,8 +549,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run an Exp2 participant manifest.")
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--start-order", type=int, default=None)
+    parser.add_argument("--only-order", type=int, default=None)
+    parser.add_argument("--calibration-in", default=None)
     args = parser.parse_args()
-    run_dir = run_participant_manifest(args.manifest, validate_only=args.validate_only)
+    run_dir = run_participant_manifest(
+        args.manifest,
+        validate_only=args.validate_only,
+        start_order=args.start_order,
+        only_order=args.only_order,
+        calibration_in=args.calibration_in,
+    )
     print(f"Run output: {run_dir}")
     return 0
 

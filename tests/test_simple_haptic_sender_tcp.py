@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
+from vendor_exp2_abc.vibration_tcp_worker import VibrationHapticConnectionError
 
 
 def test_vibration_end_command_tcp_smoke(tmp_path) -> None:
@@ -50,9 +53,47 @@ def test_vibration_end_command_tcp_smoke(tmp_path) -> None:
     assert [record.event_name for record in sender.records] == ["slip", "slip_end"]
 
 
+def test_vibration_tcp_handshake_sends_ping_before_commands(tmp_path) -> None:
+    sent_payloads: list[bytes] = []
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            vibration_enabled=True,
+            disabled_mode=False,
+            vibration_tcp_enabled=True,
+            vibration_handshake_enabled=True,
+            vibration_socket_factory=_socket_factory(sent_payloads, response=b"OK PONG\n"),
+        ),
+        session_id="tcp-handshake",
+        wall_time_fn=lambda: 0.0,
+    )
+
+    sender.send_contact(command_id=1)
+    sender.write_csv(tmp_path / "haptic_events.csv")
+
+    assert sent_payloads == [b"PING\n", b"1\n"]
+
+
+def test_vibration_tcp_handshake_rejects_unexpected_response() -> None:
+    with pytest.raises(VibrationHapticConnectionError):
+        SimpleHapticSender(
+            SimpleHapticSenderConfig(
+                vibration_enabled=True,
+                disabled_mode=False,
+                vibration_tcp_enabled=True,
+                vibration_required=True,
+                vibration_handshake_enabled=True,
+                vibration_socket_factory=_socket_factory([], response=b"ERR\n"),
+            ),
+            session_id="tcp-handshake-fail",
+            wall_time_fn=lambda: 0.0,
+        )
+
+
 class _FakeSocket:
-    def __init__(self, sent_payloads: list[bytes]) -> None:
+    def __init__(self, sent_payloads: list[bytes], response: bytes = b"") -> None:
         self.sent_payloads = sent_payloads
+        self.response = response
+        self.response_sent = False
 
     def settimeout(self, timeout: float) -> None:
         self.timeout = timeout
@@ -60,12 +101,18 @@ class _FakeSocket:
     def sendall(self, payload: bytes) -> None:
         self.sent_payloads.append(bytes(payload))
 
+    def recv(self, size: int) -> bytes:
+        if self.response_sent:
+            return b""
+        self.response_sent = True
+        return self.response[:size]
+
     def close(self) -> None:
         pass
 
 
-def _socket_factory(sent_payloads: list[bytes]):
+def _socket_factory(sent_payloads: list[bytes], response: bytes = b""):
     def factory(address, timeout):
-        return _FakeSocket(sent_payloads)
+        return _FakeSocket(sent_payloads, response=response)
 
     return factory

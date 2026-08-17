@@ -145,6 +145,107 @@ def test_manifest_runner_updates_calibration_path_from_session_summary(tmp_path)
     )
 
 
+def test_manifest_runner_can_start_from_order_with_calibration_override(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
+    plan = _write_plan(tmp_path / "motor-plan.yaml", plan_id="motor_plan_1", modality="vibration")
+    resume_cal = tmp_path / "calibrations" / "resume_cal.json"
+    manifest_path = _write_manifest(
+        tmp_path / "manifest.yaml",
+        tmp_path=tmp_path,
+        sessions=[
+            {
+                "session_label": "motor_single_01",
+                "order": 1,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+            {
+                "session_label": "motor_single_02",
+                "order": 2,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+        ],
+    )
+    calls: list[Path] = []
+
+    def fake_runner(config_path: str | Path) -> Path:
+        calls.append(Path(config_path))
+        output_dir = tmp_path / f"resume_session_{len(calls)}"
+        output_dir.mkdir()
+        (output_dir / "summary.json").write_text("{}", encoding="utf-8")
+        return output_dir
+
+    run_dir = run_participant_manifest(
+        manifest_path,
+        start_order=2,
+        calibration_in=resume_cal,
+        runner_fn=fake_runner,
+    )
+    run_summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+    prepared_config = yaml.safe_load(calls[0].read_text(encoding="utf-8"))
+
+    assert len(calls) == 1
+    assert run_summary["selected_start_order"] == 2
+    assert run_summary["sessions"][0]["order"] == 2
+    assert prepared_config["calibration_reuse"]["calibration_in"] == str(resume_cal)
+
+
+def test_manifest_runner_marks_haptic_tcp_failure_and_stops(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
+    plan = _write_plan(tmp_path / "motor-plan.yaml", plan_id="motor_plan_1", modality="vibration")
+    manifest_path = _write_manifest(
+        tmp_path / "manifest.yaml",
+        tmp_path=tmp_path,
+        sessions=[
+            {
+                "session_label": "motor_single_01",
+                "order": 1,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+            {
+                "session_label": "motor_single_02",
+                "order": 2,
+                "task_type": "single",
+                "feedback_type": "motor_only",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "motor_plan_1",
+            },
+        ],
+    )
+    calls = 0
+
+    def fake_runner(config_path: str | Path) -> Path:
+        nonlocal calls
+        calls += 1
+        output_dir = tmp_path / f"failed_session_{calls}"
+        output_dir.mkdir()
+        (output_dir / "summary.json").write_text(
+            json.dumps({"haptic_tcp_failed": True, "end_reason": "haptic_tcp_failed"}),
+            encoding="utf-8",
+        )
+        return output_dir
+
+    run_dir = run_participant_manifest(manifest_path, runner_fn=fake_runner)
+    run_summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert calls == 1
+    assert run_summary["failed_session_count"] == 1
+    assert run_summary["sessions"][0]["status"] == "failed"
+    assert run_summary["sessions"][0]["error"] == "haptic_tcp_failed"
+
+
 def test_manifest_runner_records_operator_abort_without_traceback(tmp_path) -> None:
     config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
     plan = _write_plan(tmp_path / "motor-plan.yaml", plan_id="motor_plan_1", modality="vibration")

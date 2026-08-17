@@ -303,6 +303,9 @@ class PinchHaptic1BackCoreResult:
     latest_received_frame_index_at_formal_start: int | None = None
     max_queue_depth_during_formal: int | None = None
     max_frame_age_ms_during_formal: float | None = None
+    haptic_tcp_failed: bool = False
+    haptic_tcp_failure_count: int = 0
+    haptic_tcp_failure_errors: tuple[str, ...] = ()
 
 
 def run_pinch_haptic_1back_core(
@@ -657,6 +660,19 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         ),
         vibration_host=str(vibration_tcp_config.get("host", "127.0.0.1")),
         vibration_port=int(vibration_tcp_config.get("port", 12346)),
+        vibration_handshake_enabled=_bool_config_value(
+            vibration_tcp_config.get("handshake_enabled", True),
+            "vibration_tcp.handshake_enabled",
+        ),
+        vibration_handshake_command=str(
+            vibration_tcp_config.get("handshake_command", "PING")
+        ),
+        vibration_handshake_expected_response=str(
+            vibration_tcp_config.get("handshake_expected_response", "OK")
+        ),
+        vibration_handshake_timeout_s=float(
+            vibration_tcp_config.get("handshake_timeout_s", 1.0)
+        ),
         matrix_tcp_enabled=matrix_tcp_enabled,
         matrix_required=_bool_config_value(
             matrix_tcp_config.get("required", False),
@@ -1718,6 +1734,8 @@ def _run_live_formal_phase(
     post_release_end_ms: float | None = None
     post_release_pinch_samples = 0
     release_gate_state = ReleaseGateState()
+    haptic_tcp_failed = False
+    haptic_tcp_failure_errors: tuple[str, ...] = ()
 
     while True:
         now_ms = time.monotonic() * 1000.0
@@ -1838,6 +1856,15 @@ def _run_live_formal_phase(
             )
         total_haptic_events += len(emitted)
         sender.poll_due_control_commands(now_ms)
+        haptic_tcp_failure_records = sender.tcp_failure_records()
+        if haptic_tcp_failure_records:
+            haptic_tcp_failed = True
+            haptic_tcp_failure_errors = _haptic_tcp_failure_errors(sender)
+            end_reason = "haptic_tcp_failed"
+            episode_state.interrupted_haptic_trial = True
+            final_now_ms = now_ms
+            print("[HAPTIC TCP] send failed; stopping formal session.")
+            break
 
         if nback_active:
             for row in nback_timeline.finalize_until(now_ms, session_id=session_id):
@@ -1896,6 +1923,12 @@ def _run_live_formal_phase(
         for row in nback_timeline.finalize_until(final_nback_ms, session_id=session_id):
             logger.write_nback_event(row)
     sender.poll_due_control_commands(final_now_ms)
+    haptic_tcp_failure_records = sender.tcp_failure_records()
+    if haptic_tcp_failure_records:
+        haptic_tcp_failed = True
+        haptic_tcp_failure_errors = _haptic_tcp_failure_errors(sender)
+        if not end_reason:
+            end_reason = "haptic_tcp_failed"
     zone_stats.finalize(final_now_ms)
     sender.write_csv(logger.paths.haptic_events_csv)
     logger.write_nback_events([])
@@ -1937,6 +1970,9 @@ def _run_live_formal_phase(
         latest_received_frame_index_at_formal_start=latest_received_frame_index_at_formal_start,
         max_queue_depth_during_formal=max_queue_depth_during_formal,
         max_frame_age_ms_during_formal=max_frame_age_ms_during_formal,
+        haptic_tcp_failed=haptic_tcp_failed,
+        haptic_tcp_failure_count=len(haptic_tcp_failure_records),
+        haptic_tcp_failure_errors=haptic_tcp_failure_errors,
     )
 
 
@@ -2283,6 +2319,9 @@ def _haptic_end_summary_fields(
             "latest_received_frame_index_at_formal_start": None,
             "max_queue_depth_during_formal": None,
             "max_frame_age_ms_during_formal": None,
+            "haptic_tcp_failed": False,
+            "haptic_tcp_failure_count": 0,
+            "haptic_tcp_failure_errors": [],
             "haptic_policy_warnings": [],
         }
     return {
@@ -2314,6 +2353,9 @@ def _haptic_end_summary_fields(
         ),
         "max_queue_depth_during_formal": result.max_queue_depth_during_formal,
         "max_frame_age_ms_during_formal": result.max_frame_age_ms_during_formal,
+        "haptic_tcp_failed": result.haptic_tcp_failed,
+        "haptic_tcp_failure_count": result.haptic_tcp_failure_count,
+        "haptic_tcp_failure_errors": list(result.haptic_tcp_failure_errors),
         "release_was_held": result.release_was_held,
         "release_emit_trial_number": result.release_emit_trial_number,
         "haptic_policy_warnings": list(result.haptic_policy_warnings),
@@ -2322,6 +2364,20 @@ def _haptic_end_summary_fields(
         "trial_gate_enabled": result.trial_gate_enabled,
         "digit_guard_enabled": result.digit_guard_enabled,
     }
+
+
+def _haptic_tcp_failure_errors(sender: SimpleHapticSender) -> tuple[str, ...]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    for record in sender.tcp_failure_records():
+        text = str(record.tcp_error or record.not_sent_reason or record.send_status or "")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        errors.append(text)
+        if len(errors) >= 5:
+            break
+    return tuple(errors)
 
 
 def _final_summary_end_reason(

@@ -492,6 +492,18 @@ python run_participant_manifest.py --manifest participant_manifest_example.yaml 
 python run_participant_manifest.py --manifest participant_manifest_example.yaml
 ```
 
+从某个 order 继续运行：
+
+```bash
+python run_participant_manifest.py --manifest participant_manifest_example.yaml --start-order 5 --calibration-in calibrations/P001_exp2_cal_v02.json
+```
+
+只运行某一个 order：
+
+```bash
+python run_participant_manifest.py --manifest participant_manifest_example.yaml --only-order 5 --calibration-in calibrations/P001_exp2_cal_v02.json
+```
+
 manifest runner 会：
 
 - 检查 `participant_id`、`run_id`、session label/order 唯一性。
@@ -502,8 +514,15 @@ manifest runner 会：
 - 把每个 session 的输出放到 `outputs/<run_id>/sessions/`。
 - 写 `outputs/<run_id>/run_summary.json`，记录 planned/completed session、seed、condition、plan、output path、calibration path。
 - 如果某个 session quick check 失败并保存了新版 calibration，后续 session 会自动改用新版 calibration path。
+- 如果 formal session 中 haptic TCP 发送失败，session summary 会写 `end_reason: haptic_tcp_failed` / `haptic_tcp_failed: true`，manifest 会把该 order 标成 `failed` 并停止后续 session，方便之后用 `--start-order` 或 `--only-order` 续跑。
 
 当前 manifest 不做自动 Latin square、不自动决定条件顺序、不自动选择 plan；它只忠实执行你写在 manifest 里的顺序。
+
+Vibration ESP32 握手：
+
+- 新建的 MicroPython 文件是 `esp32-test-main-1-handshake.py`，原 `esp32-test-main-1.py` 不改。
+- Python 端在 `vibration_tcp.enabled: true` 时默认发送 `PING\n`，ESP32 必须返回包含 `OK` 的一行，例如 `OK PONG`。
+- 如需临时兼容旧 ESP32 程序，可以在对应 YAML 的 `vibration_tcp` 下显式写 `handshake_enabled: false`；正式实验建议保持默认开启。
 
 ## 不应修改的边界
 
