@@ -33,8 +33,8 @@ EVENT_LABELS = {
     "slip": "slip / 滑动",
     "left": "left / 左",
     "right": "right / 右",
-    "up": "up / 前/上",
-    "down": "down / 后/下",
+    "up": "up /上",
+    "down": "down /下",
 }
 
 
