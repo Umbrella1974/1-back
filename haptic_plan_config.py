@@ -30,11 +30,13 @@ class HapticOnsetPolicy:
 class MatrixSequenceStep:
     offset_ms: int
     channel_list: tuple[int, ...]
+    step_label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "offset_ms": self.offset_ms,
             "channel_list": list(self.channel_list),
+            "step_label": self.step_label,
         }
 
 
@@ -53,6 +55,7 @@ class HapticPlanEvent:
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     matrix_sequence: tuple[MatrixSequenceStep, ...] = field(default_factory=tuple)
     payload: dict[str, Any] | None = None
+    simultaneous_group: str = ""
     onset_delay_ms: tuple[int, int] | None = None
     onset_gap_after_previous_ms: tuple[int, int] | None = None
     nback_trial_window: tuple[int, int] | None = None
@@ -63,6 +66,8 @@ class HapticPlanEvent:
         payload = asdict(self)
         payload["channel_list"] = list(self.channel_list)
         payload["matrix_sequence"] = [step.to_dict() for step in self.matrix_sequence]
+        if not self.trigger_zone:
+            payload.pop("trigger_zone", None)
         if not self.matrix_sequence:
             payload.pop("matrix_sequence", None)
         if payload.get("duration_ms") is None:
@@ -73,6 +78,8 @@ class HapticPlanEvent:
             payload.pop("duration_ms_range", None)
         if self.payload is None:
             payload.pop("payload", None)
+        if not self.simultaneous_group:
+            payload.pop("simultaneous_group", None)
         if self.onset_delay_ms is not None:
             payload["onset_delay_ms"] = list(self.onset_delay_ms)
         else:
@@ -249,6 +256,7 @@ def _parse_event(
         "channel_list",
         "matrix_sequence",
         "payload",
+        "simultaneous_group",
         "onset_delay_ms",
         "onset_gap_after_previous_ms",
         "nback_trial_window",
@@ -267,7 +275,7 @@ def _parse_event(
         raise ValueError(f"{name_prefix}.modality must be vibration or matrix.")
 
     trigger_zone = str(payload.get("trigger_zone", "")).strip()
-    if trigger_zone not in zones:
+    if trigger_zone and trigger_zone not in zones:
         raise ValueError(f"{name_prefix}.trigger_zone references unknown zone: {trigger_zone}")
     duration_ms = (
         _positive_int(payload.get("duration_ms"), f"{name_prefix}.duration_ms")
@@ -304,6 +312,7 @@ def _parse_event(
         f"{name_prefix}.matrix_sequence",
     )
     event_payload = _optional_mapping(payload.get("payload"), f"{name_prefix}.payload")
+    simultaneous_group = _optional_str(payload.get("simultaneous_group")) or ""
     onset_delay_ms = (
         _range_ms(payload.get("onset_delay_ms"), f"{name_prefix}.onset_delay_ms")
         if payload.get("onset_delay_ms") is not None
@@ -385,6 +394,7 @@ def _parse_event(
         channel_list=channel_list,
         matrix_sequence=matrix_sequence,
         payload=event_payload,
+        simultaneous_group=simultaneous_group,
         onset_delay_ms=onset_delay_ms,
         onset_gap_after_previous_ms=onset_gap_after_previous_ms,
         nback_trial_window=nback_trial_window,
@@ -446,8 +456,10 @@ def _parse_onset_policy(
 
 
 def _parse_zones(value: Any) -> dict[str, HapticZoneSpec]:
-    if not isinstance(value, dict) or not value:
-        raise ValueError("zones must be a non-empty object.")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("zones must be an object.")
     zones: dict[str, HapticZoneSpec] = {}
     for zone_name, zone_payload in value.items():
         name = str(zone_name).strip()
@@ -617,7 +629,7 @@ def _matrix_sequence(value: Any, name: str) -> tuple[MatrixSequenceStep, ...]:
         item_name = f"{name}[{index}]"
         if not isinstance(item, dict):
             raise ValueError(f"{item_name} must be an object.")
-        unknown = sorted(set(item) - {"offset_ms", "channel_list"})
+        unknown = sorted(set(item) - {"offset_ms", "channel_list", "step_label"})
         if unknown:
             raise ValueError(f"unknown {item_name} keys: {', '.join(unknown)}")
         offset_ms = _non_negative_int(item.get("offset_ms", 0), f"{item_name}.offset_ms")
@@ -626,7 +638,13 @@ def _matrix_sequence(value: Any, name: str) -> tuple[MatrixSequenceStep, ...]:
         channel_list = _channel_list(item.get("channel_list"), f"{item_name}.channel_list")
         if not channel_list:
             raise ValueError(f"{item_name}.channel_list must be non-empty.")
-        steps.append(MatrixSequenceStep(offset_ms=offset_ms, channel_list=channel_list))
+        steps.append(
+            MatrixSequenceStep(
+                offset_ms=offset_ms,
+                channel_list=channel_list,
+                step_label=_optional_str(item.get("step_label")) or "",
+            )
+        )
         previous_offset = offset_ms
     return tuple(steps)
 

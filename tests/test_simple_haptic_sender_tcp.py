@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import csv
 from types import SimpleNamespace
 
 import pytest
 
-from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
+from simple_haptic_sender import (
+    HAPTIC_EVENT_FIELDS,
+    SimpleHapticSender,
+    SimpleHapticSenderConfig,
+)
 from vendor_exp2_abc.vibration_tcp_worker import VibrationHapticConnectionError
 
 
@@ -116,3 +121,49 @@ def _socket_factory(sent_payloads: list[bytes], response: bytes = b""):
         return _FakeSocket(sent_payloads, response=response)
 
     return factory
+
+
+def test_matrix_sequence_step_label_exported_to_csv(tmp_path) -> None:
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(disabled_mode=True),
+        session_id="label-csv",
+        wall_time_fn=lambda: 0.0,
+    )
+    sender.record_plan_event(
+        SimpleNamespace(
+            name="contact-up",
+            modality="matrix",
+            duration_ms=200,
+            matrix_sequence=[
+                {"offset_ms": 0, "channel_list": [1, 2, 3], "step_label": "contact_down"},
+                {"offset_ms": 100, "channel_list": [4, 5, 6], "step_label": "contact_up"},
+            ],
+        )
+    )
+    path = sender.write_csv(tmp_path / "haptic_events.csv")
+
+    rows = list(csv.DictReader(open(path, encoding="utf-8", newline="")))
+    assert [row["matrix_sequence_step_label"] for row in rows] == [
+        "contact_down",
+        "contact_up",
+    ]
+
+
+def test_csv_exports_queued_and_sent_monotonic_ms(tmp_path) -> None:
+    assert "queued_monotonic_ms" in HAPTIC_EVENT_FIELDS
+    assert "sent_monotonic_ms" in HAPTIC_EVENT_FIELDS
+
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(disabled_mode=True),
+        session_id="ts-csv",
+        wall_time_fn=lambda: 0.0,
+    )
+    rec = sender.send_contact(command_id=1)
+    rec.queued_monotonic_ms = 123.0
+    rec.sent_monotonic_ms = 456.0
+    path = sender.write_csv(tmp_path / "haptic_events.csv")
+
+    row = next(csv.DictReader(open(path, encoding="utf-8", newline="")))
+    assert row["queued_monotonic_ms"] == "123.0"
+    assert row["sent_monotonic_ms"] == "456.0"
+    assert row["tcp_queued"] == "True"

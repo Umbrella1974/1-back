@@ -1,0 +1,38 @@
+participant_id: 12324075
+run_id: 12324075_exp2_5_001
+run_seed: null
+output_root: outputs
+
+calibration:
+  path: calibrations/12324075_exp2_5_cal_v01.json
+  reuse: true
+  quick_check: true
+
+sessions:
+  - session_label: combined-nozone-1
+    order: 1
+    task_type: single
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_combined-nozone-1.yaml
+    plan_id: combined-nozone-1
+    cue_dispatch_mode: timed_grouped
+
+  - session_label: double-matrix-nozone-1
+    order: 2
+    task_type: single
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic_plan_combined-nozone-2.yaml
+    plan_id: double-matrix-nozone-1
+    cue_dispatch_mode: timed_grouped
+
+  - session_label: matrix-nozone-1
+    order: 3
+    task_type: single
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic_plan_combined-nozone-3.yaml
+    plan_id: matrix-nozone-1
+    cue_dispatch_mode: timed_grouped
+

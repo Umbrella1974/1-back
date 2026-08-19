@@ -15,6 +15,7 @@ PENDING_CONTACT = "PENDING_CONTACT"
 WAIT_CLOSED_ZONE = "WAIT_CLOSED_ZONE"
 PENDING_PLAN_EVENT = "PENDING_PLAN_EVENT"
 REFRACTORY = "REFRACTORY"
+PENDING_TIMED_GROUP = "PENDING_TIMED_GROUP"
 
 IF_CANNOT_AVOID_POLICIES = {"log_warning_and_send", "skip_event", "abort"}
 
@@ -79,6 +80,7 @@ class ScheduledHapticEvent:
     end_command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     matrix_sequence: tuple[Any, ...] = field(default_factory=tuple)
+    simultaneous_group: str = ""
     duration_ms: int = 0
     sampled_duration_ms: int | None = None
     global_default_used: bool = False
@@ -148,6 +150,34 @@ class _PendingEvent:
     sampled_delay_ms: int | None = None
     sampled_gap_ms: int | None = None
     timing_note: str = ""
+
+
+@dataclass(frozen=True)
+class _TimedGroup:
+    group_index: int
+    event_index: int
+    events: tuple[HapticPlanEvent, ...]
+    simultaneous_group: str = ""
+
+
+@dataclass(frozen=True)
+class _PendingTimedGroup:
+    group_index: int
+    group: _TimedGroup
+    adjustment: OnsetAdjustment
+    sampled_durations_ms: tuple[int, ...]
+    global_default_used: tuple[bool, ...]
+    sampled_delay_ms: int | None = None
+    sampled_gap_ms: int | None = None
+    timing_note: str = ""
+
+    @property
+    def event_index(self) -> int:
+        return self.group.event_index
+
+    @property
+    def event(self) -> HapticPlanEvent:
+        return self.group.events[0]
 
 
 def adjust_onset_away_from_digit_onsets(
@@ -223,6 +253,14 @@ class HapticTrialScheduler:
     ) -> None:
         if not plan.events:
             raise ValueError("plan must contain at least one event.")
+        missing_zone = [
+            event.name for event in plan.events if not str(event.trigger_zone or "").strip()
+        ]
+        if missing_zone:
+            raise ValueError(
+                "zone_sequential haptic plan events require trigger_zone: "
+                + ", ".join(missing_zone)
+            )
         self.plan = plan
         self.config = config or HapticTrialSchedulerConfig()
         self.rng = rng or random.Random(plan.random_seed)
@@ -483,6 +521,263 @@ class HapticTrialScheduler:
 
     def _clear_pending(self) -> None:
         self._pending = None
+
+
+class TimedGroupedHapticScheduler:
+    """Schedule haptic events by elapsed time, ignoring pinch-zone triggers."""
+
+    def __init__(
+        self,
+        plan: HapticPlanConfig,
+        config: HapticTrialSchedulerConfig | None = None,
+        *,
+        rng: random.Random | None = None,
+    ) -> None:
+        if not plan.events:
+            raise ValueError("plan must contain at least one event.")
+        self.plan = plan
+        self.config = config or HapticTrialSchedulerConfig()
+        self.rng = rng or random.Random(plan.random_seed)
+        self.groups = _timed_groups(plan.events)
+        self.state = "TIMED_GROUP_INIT"
+        self.haptic_trial_index = 0
+        self._pending: _PendingTimedGroup | None = None
+        self._refractory_until_ms: float | None = None
+
+    def update(
+        self,
+        *,
+        zone: str,
+        now_ms: float,
+        pinch_distance: float | None = None,
+        frame_index: int | None = None,
+        digit_onsets_ms: Iterable[float] | None = None,
+    ) -> list[ScheduledHapticEvent]:
+        now = _finite_float(now_ms, "now_ms")
+        while True:
+            if self.state == "TIMED_GROUP_INIT":
+                self._schedule_group(
+                    0,
+                    base_ms=now,
+                    digit_onsets_ms=digit_onsets_ms,
+                    timing_note="timed_grouped_after_formal_start",
+                    first_group=True,
+                )
+                return []
+            if self.state == PENDING_TIMED_GROUP:
+                pending = self._pending
+                if pending is None or now < pending.adjustment.adjusted_onset_ms:
+                    return []
+                events = self._emit_pending_group(
+                    actual_emit_ms=now,
+                    actual_zone_at_emit=zone,
+                    pinch_distance=pinch_distance,
+                    frame_index=frame_index,
+                )
+                next_group_index = pending.group_index + 1
+                if next_group_index >= len(self.groups):
+                    self._enter_refractory(events)
+                    return events
+                group_duration = max(float(event.duration_ms or 0) for event in events)
+                self._schedule_group(
+                    next_group_index,
+                    base_ms=now + group_duration,
+                    digit_onsets_ms=digit_onsets_ms,
+                    timing_note="timed_grouped_after_previous_group_emit",
+                    first_group=False,
+                )
+                return events
+            if self.state == REFRACTORY:
+                refractory_until = self._refractory_until_ms
+                if refractory_until is not None and now < refractory_until:
+                    return []
+                self._refractory_until_ms = None
+                self.state = "TIMED_GROUP_INIT"
+                continue
+            raise RuntimeError(f"unknown timed haptic scheduler state: {self.state}")
+
+    def _schedule_group(
+        self,
+        group_index: int,
+        *,
+        base_ms: float,
+        digit_onsets_ms: Iterable[float] | None,
+        timing_note: str,
+        first_group: bool,
+    ) -> None:
+        group = self.groups[group_index]
+        timing_event = group.events[0]
+        if first_group:
+            delay_range = timing_event.onset_delay_ms or self.plan.haptic_defaults.contact_onset_delay_ms
+            sampled_delay = self._sample_range(delay_range)
+            sampled_gap = None
+            original_onset = float(base_ms) + sampled_delay
+        else:
+            gap_range = timing_event.onset_gap_after_previous_ms or self.plan.haptic_defaults.inter_event_gap_ms
+            sampled_gap = self._sample_range(gap_range)
+            sampled_delay = None
+            original_onset = float(base_ms) + sampled_gap
+        adjustment = self._adjust_onset(original_onset, digit_onsets_ms)
+        if adjustment.should_skip:
+            if group_index >= len(self.groups) - 1:
+                self._refractory_until_ms = original_onset + self.plan.timing.refractory_ms
+                self.haptic_trial_index += 1
+                self.state = REFRACTORY
+            else:
+                self._schedule_group(
+                    group_index + 1,
+                    base_ms=original_onset,
+                    digit_onsets_ms=digit_onsets_ms,
+                    timing_note="timed_grouped_after_previous_group_emit",
+                    first_group=False,
+                )
+            return
+        sampled: list[int] = []
+        default_used: list[bool] = []
+        for event in group.events:
+            duration, used = self._sample_event_duration(event)
+            sampled.append(duration)
+            default_used.append(used)
+        self._pending = _PendingTimedGroup(
+            group_index=group_index,
+            group=group,
+            adjustment=adjustment,
+            sampled_durations_ms=tuple(sampled),
+            global_default_used=tuple(default_used),
+            sampled_delay_ms=sampled_delay,
+            sampled_gap_ms=sampled_gap,
+            timing_note=timing_note,
+        )
+        self.state = PENDING_TIMED_GROUP
+
+    def _emit_pending_group(
+        self,
+        *,
+        actual_emit_ms: float,
+        actual_zone_at_emit: str,
+        pinch_distance: float | None,
+        frame_index: int | None,
+    ) -> list[ScheduledHapticEvent]:
+        pending = self._pending
+        if pending is None:
+            raise RuntimeError("no pending haptic group to emit.")
+        events: list[ScheduledHapticEvent] = []
+        for offset, event in enumerate(pending.group.events):
+            duration_ms = pending.sampled_durations_ms[offset]
+            scheduled = ScheduledHapticEvent(
+                haptic_trial_index=self.haptic_trial_index,
+                event_index=pending.group.event_index + offset,
+                event_name=event.name,
+                modality=event.modality,
+                command_label=event.command_label,
+                command_id=event.command_id,
+                end_command_label=event.end_command_label,
+                end_command_id=event.end_command_id,
+                channel_list=event.channel_list,
+                matrix_sequence=event.matrix_sequence,
+                simultaneous_group=pending.group.simultaneous_group,
+                duration_ms=duration_ms,
+                sampled_duration_ms=duration_ms,
+                global_default_used=pending.global_default_used[offset],
+                trigger_zone=event.trigger_zone,
+                actual_zone_at_emit=str(actual_zone_at_emit),
+                trigger_pinch_distance=(
+                    float(pinch_distance) if pinch_distance is not None else None
+                ),
+                trigger_frame_index=int(frame_index) if frame_index is not None else None,
+                actual_emit_monotonic_ms=float(actual_emit_ms),
+                actual_emit_ms=float(actual_emit_ms),
+                event_end_monotonic_ms=float(actual_emit_ms) + float(duration_ms),
+                original_planned_onset_ms=pending.adjustment.original_planned_onset_ms,
+                adjusted_onset_ms=pending.adjustment.adjusted_onset_ms,
+                nearest_digit_onset_ms=pending.adjustment.nearest_digit_onset_ms,
+                digit_onset_delta_ms=pending.adjustment.digit_onset_delta_ms,
+                onset_was_delayed=pending.adjustment.onset_was_delayed,
+                sync_warning=pending.adjustment.sync_warning,
+                sampled_delay_ms=pending.sampled_delay_ms,
+                sampled_gap_ms=pending.sampled_gap_ms,
+                nback_trial_window=event.nback_trial_window,
+                require_wrist_neutral_before_emit=event.require_wrist_neutral_before_emit,
+                wrist_neutral_timeout_ms=event.wrist_neutral_timeout_ms,
+                trial_gate_enabled=False,
+                trial_gate_ignored=event.nback_trial_window is not None,
+                wrist_neutral_gate_required=False,
+                timing_note=pending.timing_note + ";zone_gate_ignored",
+                end_reason="haptic_release" if event.name == "release" else "",
+                haptic_episode_completed=event.name == "release",
+            )
+            events.append(scheduled)
+        self._pending = None
+        return events
+
+    def _enter_refractory(self, events: list[ScheduledHapticEvent]) -> None:
+        latest_end = max(
+            float(event.event_end_monotonic_ms or event.actual_emit_monotonic_ms or 0.0)
+            for event in events
+        )
+        self._refractory_until_ms = latest_end + float(self.plan.timing.refractory_ms)
+        self.haptic_trial_index += 1
+        self.state = REFRACTORY
+        self._pending = None
+
+    def _adjust_onset(
+        self,
+        original_onset_ms: float,
+        digit_onsets_ms: Iterable[float] | None,
+    ) -> OnsetAdjustment:
+        return adjust_onset_away_from_digit_onsets(
+            onset_ms=original_onset_ms,
+            digit_onsets_ms=digit_onsets_ms,
+            avoid_haptic_on_digit_onset=self.config.avoid_haptic_on_digit_onset,
+            guard_ms=self.config.digit_onset_guard_ms,
+            max_haptic_delay_ms=self.config.max_haptic_delay_ms,
+            if_cannot_avoid=self.config.if_cannot_avoid,
+        )
+
+    def _sample_range(self, value: tuple[int, int]) -> int:
+        lower, upper = value
+        return int(self.rng.randint(int(lower), int(upper)))
+
+    def _sample_event_duration(self, event: HapticPlanEvent) -> tuple[int, bool]:
+        if event.duration_ms is not None:
+            return int(event.duration_ms), False
+        if event.duration_ms_range is not None:
+            return self._sample_range(event.duration_ms_range), False
+        return self._sample_range(self._default_duration_range(event)), True
+
+    def _default_duration_range(self, event: HapticPlanEvent) -> tuple[int, int]:
+        if event.name in {"contact", "release"}:
+            return self.plan.haptic_defaults.release_duration_ms
+        if event.modality == "matrix":
+            return self.plan.haptic_defaults.matrix_duration_ms
+        return self.plan.haptic_defaults.vibration_duration_ms
+
+
+def _timed_groups(events: tuple[HapticPlanEvent, ...]) -> tuple[_TimedGroup, ...]:
+    groups: list[_TimedGroup] = []
+    index = 0
+    while index < len(events):
+        first = events[index]
+        group_name = str(first.simultaneous_group or "")
+        group_events = [first]
+        next_index = index + 1
+        if group_name:
+            while (
+                next_index < len(events)
+                and str(events[next_index].simultaneous_group or "") == group_name
+            ):
+                group_events.append(events[next_index])
+                next_index += 1
+        groups.append(
+            _TimedGroup(
+                group_index=len(groups),
+                event_index=index,
+                events=tuple(group_events),
+                simultaneous_group=group_name,
+            )
+        )
+        index = next_index
+    return tuple(groups)
 
 
 def _nearest_digit_onset(onset_ms: float, digit_onsets_ms: list[float]) -> float | None:

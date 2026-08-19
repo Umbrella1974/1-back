@@ -84,6 +84,68 @@ python run_pinch_haptic_1back.py --config only-matrix.yaml
 
 `single` 模式会保留 MANUS、pinch/wrist calibration、haptic plan、haptic TCP、neutral gate 和所有触觉日志，但不会启动 1-back pygame 窗口，也不会记录 1-back response。`nback_events.csv` 仍会写 header-only 空文件，方便后续批量分析。
 
+### Cue dispatch mode
+
+`task_type` 决定是否有 1-back；`cue_dispatch_mode` 决定 haptic cue 怎么被触发。两者是不同概念。
+
+默认模式：
+
+```yaml
+session:
+  cue_dispatch_mode: zone_sequential
+```
+
+`zone_sequential` 是当前正式使用的旧逻辑：
+
+- 每个 cue 单独、按 haptic plan 顺序发送。
+- `contact` 先等待 `open_zone`，离开 open zone 会取消 pending contact。
+- 后续 cue 等待 closed/open 流程、gap、trial window、soft wrist neutral gate 等旧逻辑。
+- 这是默认值；旧 config / manifest 不写也等价于这个模式。
+
+新增模式：
+
+```yaml
+session:
+  cue_dispatch_mode: timed_grouped
+```
+
+`timed_grouped` 是时间调度模式：
+
+- 不使用 pinch zone 作为发送条件；`trigger_zone` 会保留进日志，但不控制发送。
+- no-zone plan 可以不写 event-level `trigger_zone`，也可以不写顶层 `zones`；但这种 plan 必须配 `cue_dispatch_mode: timed_grouped`，不能用默认 `zone_sequential`。
+- 第一个 cue/group 按 `onset_delay_ms` 或 `haptic_defaults.contact_onset_delay_ms`。
+- 后续 cue/group 按 `onset_gap_after_previous_ms` 或 `haptic_defaults.inter_event_gap_ms`。
+- 连续 event 如果写了相同 `simultaneous_group`，会在同一个 tick 发出。
+- 同组发送时，PC 端先 queue vibration，再 queue matrix。
+- 第一版不套旧的 n-back trial gate / wrist neutral gate，避免 simultaneous group 被拆开；如果 event 写了 `nback_trial_window`，日志会标记 `trial_gate_ignored=True`。
+
+示例：
+
+```yaml
+events:
+  - name: contact
+    modality: vibration
+    command_id: 1
+    duration_ms: 1500
+    trigger_zone: open_zone
+    onset_delay_ms: [1000, 2000]
+    simultaneous_group: g1
+
+  - name: up
+    modality: matrix
+    channel_list: [82, 84, 87]
+    duration_ms: 1000
+    trigger_zone: closed_zone
+    simultaneous_group: g1
+
+  - name: release
+    modality: vibration
+    command_id: 4
+    duration_ms: 1500
+    trigger_zone: closed_zone
+    onset_gap_after_previous_ms: [8000, 12000]
+```
+
 `single` 模式下会显式关闭：
 
 - n-back trial window gate
@@ -475,6 +537,7 @@ sessions:
     order: 1
     task_type: single
     feedback_type: motor_only
+    cue_dispatch_mode: zone_sequential
     config: only-motor.yaml
     haptic_plan_config: haptic-plan-only-motor-1.yaml
     plan_id: only-motor-1

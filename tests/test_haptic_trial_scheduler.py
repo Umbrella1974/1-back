@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from haptic_plan_config import haptic_plan_config_from_dict
 from haptic_trial_scheduler import (
     PENDING_CONTACT,
+    PENDING_TIMED_GROUP,
     PENDING_PLAN_EVENT,
     REFRACTORY,
+    TimedGroupedHapticScheduler,
     WAIT_CLOSED_ZONE,
     WAIT_OPEN_ZONE,
     HapticTrialScheduler,
@@ -157,6 +161,74 @@ def test_scheduler_state_machine_runs_plan_after_delays() -> None:
     next_contact = scheduler.update(zone="open_zone", now_ms=8950.0)[0]
     assert next_contact.event_name == "contact"
     assert next_contact.haptic_trial_index == 1
+
+
+def test_timed_grouped_scheduler_ignores_zone_and_emits_same_group_together() -> None:
+    payload = _plan(contact_delay=[100, 100], event_gap=[200, 200]).to_dict()
+    payload["events"][0]["simultaneous_group"] = "g1"
+    payload["events"][1] = {
+        "name": "up",
+        "modality": "matrix",
+        "channel_list": [82, 84, 87],
+        "duration_ms": 300,
+        "trigger_zone": "closed_zone",
+        "simultaneous_group": "g1",
+    }
+    payload["events"][2] = {
+        "name": "release",
+        "modality": "vibration",
+        "command_label": "contact_exit",
+        "command_id": 2,
+        "duration_ms": 100,
+        "trigger_zone": "closed_zone",
+        "onset_gap_after_previous_ms": [200, 200],
+    }
+    del payload["events"][3:]
+    plan = haptic_plan_config_from_dict(payload)
+    scheduler = TimedGroupedHapticScheduler(plan)
+
+    assert scheduler.update(zone="closed_zone", now_ms=0.0) == []
+    assert scheduler.state == PENDING_TIMED_GROUP
+    assert scheduler.update(zone="invalid", now_ms=99.0) == []
+    group = scheduler.update(zone="invalid", now_ms=100.0)
+
+    assert [event.event_name for event in group] == ["contact", "up"]
+    assert {event.actual_emit_monotonic_ms for event in group} == {100.0}
+    assert {event.simultaneous_group for event in group} == {"g1"}
+    assert [event.actual_zone_at_emit for event in group] == ["invalid", "invalid"]
+    assert scheduler.update(zone="open_zone", now_ms=599.0) == []
+    release = scheduler.update(zone="open_zone", now_ms=600.0)[0]
+    assert release.event_name == "release"
+    assert release.actual_zone_at_emit == "open_zone"
+
+
+def test_zone_sequential_rejects_no_zone_plan() -> None:
+    payload = _plan(contact_delay=[100, 100], event_gap=[200, 200]).to_dict()
+    for event in payload["events"]:
+        event.pop("trigger_zone", None)
+        event.pop("onset_policy", None)
+    payload.pop("zones")
+    plan = haptic_plan_config_from_dict(payload)
+
+    with pytest.raises(ValueError, match="zone_sequential.*trigger_zone"):
+        HapticTrialScheduler(plan)
+
+
+def test_timed_grouped_scheduler_accepts_no_zone_plan() -> None:
+    payload = _plan(contact_delay=[100, 100], event_gap=[200, 200]).to_dict()
+    for event in payload["events"]:
+        event.pop("trigger_zone", None)
+        event.pop("onset_policy", None)
+    payload.pop("zones")
+    plan = haptic_plan_config_from_dict(payload)
+    scheduler = TimedGroupedHapticScheduler(plan)
+
+    scheduler.update(zone="invalid", now_ms=0.0)
+    contact = scheduler.update(zone="invalid", now_ms=100.0)[0]
+
+    assert contact.event_name == "contact"
+    assert contact.trigger_zone == ""
+    assert contact.actual_zone_at_emit == "invalid"
 
 
 def test_scheduler_carries_vibration_end_command_metadata() -> None:

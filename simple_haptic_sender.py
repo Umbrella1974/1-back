@@ -31,6 +31,7 @@ HAPTIC_EVENT_FIELDS = [
     "wall_time_iso",
     "monotonic_ms",
     "event_name",
+    "simultaneous_group",
     "modality",
     "command_label",
     "command_id",
@@ -38,6 +39,7 @@ HAPTIC_EVENT_FIELDS = [
     "matrix_sequence_step_index",
     "matrix_sequence_step_count",
     "matrix_sequence_offset_ms",
+    "matrix_sequence_step_label",
     "duration_ms",
     "sampled_duration_ms",
     "event_end_monotonic_ms",
@@ -72,6 +74,8 @@ HAPTIC_EVENT_FIELDS = [
     "sampled_gap_ms",
     "time_ready_ms",
     "actual_emit_ms",
+    "queued_monotonic_ms",
+    "sent_monotonic_ms",
     "planned_emit_trial_number",
     "emit_trial_number",
     "trial_gate_enabled",
@@ -177,12 +181,14 @@ class HapticEventRecord:
     monotonic_ms: float
     event_name: str
     modality: str
+    simultaneous_group: str = ""
     command_label: str | None = None
     command_id: int | None = None
     channel_list: list[int] = field(default_factory=list)
     matrix_sequence_step_index: int | None = None
     matrix_sequence_step_count: int | None = None
     matrix_sequence_offset_ms: int | None = None
+    matrix_sequence_step_label: str = ""
     duration_ms: int | None = None
     sampled_duration_ms: int | None = None
     event_end_monotonic_ms: float | None = None
@@ -312,6 +318,7 @@ class SimpleHapticSender:
             haptic_trial_index=getattr(scheduled, "haptic_trial_index"),
             event_index=getattr(scheduled, "event_index"),
             command_label=getattr(scheduled, "command_label", None),
+            simultaneous_group=getattr(scheduled, "simultaneous_group", ""),
             command_id=getattr(scheduled, "command_id", None),
             duration_ms=getattr(scheduled, "duration_ms", None),
             sampled_duration_ms=getattr(scheduled, "sampled_duration_ms", None),
@@ -504,6 +511,7 @@ class SimpleHapticSender:
                 matrix_sequence_step_index=index + 1,
                 matrix_sequence_step_count=step_count,
                 matrix_sequence_offset_ms=offset_ms,
+                matrix_sequence_step_label=_matrix_sequence_step_label(step),
                 monotonic_ms=float(base_monotonic_ms) + float(offset_ms),
                 actual_emit_ms=float(base_actual_emit_ms) + float(offset_ms),
                 source_event_name="" if index == 0 else str(event_name),
@@ -596,11 +604,13 @@ class SimpleHapticSender:
         haptic_trial_index: int = 0,
         event_index: int | None = None,
         command_label: str | None = None,
+        simultaneous_group: str = "",
         command_id: int | None = None,
         channel_list: list[int] | tuple[int, ...] | None = None,
         matrix_sequence_step_index: int | None = None,
         matrix_sequence_step_count: int | None = None,
         matrix_sequence_offset_ms: int | None = None,
+        matrix_sequence_step_label: str = "",
         duration_ms: int | None = None,
         sampled_duration_ms: int | None = None,
         event_end_monotonic_ms: float | None = None,
@@ -683,6 +693,7 @@ class SimpleHapticSender:
                 else float(self.monotonic_ms_fn())
             ),
             event_name=str(event_name),
+            simultaneous_group=str(simultaneous_group or ""),
             modality=str(modality),
             command_label=command_label,
             command_id=int(command_id) if command_id is not None else None,
@@ -702,6 +713,7 @@ class SimpleHapticSender:
                 if matrix_sequence_offset_ms is not None
                 else None
             ),
+            matrix_sequence_step_label=str(matrix_sequence_step_label or ""),
             duration_ms=int(duration_ms) if duration_ms is not None else None,
             sampled_duration_ms=(
                 int(sampled_duration_ms) if sampled_duration_ms is not None else None
@@ -956,6 +968,12 @@ def _matrix_sequence_channel_list(step: Any) -> list[int]:
     if not result:
         raise ValueError("matrix_sequence channel_list must be non-empty.")
     return result
+
+
+def _matrix_sequence_step_label(step: Any) -> str:
+    if isinstance(step, dict):
+        return str(step.get("step_label", "") or "")
+    return str(getattr(step, "step_label", "") or "")
 
 
 def _vibration_command_id(record: HapticEventRecord) -> int:

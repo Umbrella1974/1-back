@@ -534,6 +534,7 @@ def _scheduled_event_for_learning(
         haptic_trial_index=0,
         event_index=event_index,
         event_name=event.name,
+        simultaneous_group=event.simultaneous_group,
         modality=event.modality,
         command_label=event.command_label,
         command_id=event.command_id,

@@ -1,0 +1,53 @@
+plan_id: matrix-nozone-1
+description: Contact first, then slip-left-right, release last.
+random_seed: 123
+
+timing:
+  contact_onset_delay_ms: [1000, 2000]
+  inter_event_gap_ms: [2000,3000]
+  refractory_ms: 3000
+
+events: 
+
+  - name: contact
+    modality: matrix
+    matrix_sequence:
+      - offset_ms: 0
+        channel_list: [81, 82, 83, 84, 86, 87, 88, 89]
+        step_label: contact
+      - offset_ms: 100
+        channel_list: [82, 84, 87]
+        step_label: up
+    duration_ms: 2500
+    onset_delay_ms: [1000, 2000]
+    trigger_zone: open_zone
+
+  - name: right-slip
+    modality: matrix
+    matrix_sequence:
+      - offset_ms: 0
+        channel_list: [87, 88, 89]
+        step_label: right
+      - offset_ms: 100
+        channel_list: [82,84,87]
+        step_label: slip
+      - offset_ms: 200   
+        channel_list: [83,86,89]
+        step_label: slip
+    duration_ms: 1000
+    trigger_zone: closed_zone
+
+
+  - name: release
+    modality: matrix
+    channel_list: [85]
+    trigger_zone: closed_zone
+    duration_ms: 1000
+
+zones:
+  open_zone:
+    lower: auto_a
+    upper: auto_max
+  closed_zone:
+    lower: auto_min
+    upper: auto_a

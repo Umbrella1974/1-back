@@ -55,9 +55,9 @@ def test_learning_session_extracts_down_from_only_motor_templates() -> None:
     assert [event.name for event in session.events] == [
         "contact",
         "slip",
-        "up",
-        "right",
         "left",
+        "right",
+        "up",
         "down",
         "release",
     ]

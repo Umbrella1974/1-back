@@ -14,6 +14,8 @@ from typing import Any, Callable
 
 from haptic_plan_config import load_haptic_plan_config
 from run_pinch_haptic_1back import (
+    CUE_DISPATCH_MODES,
+    CUE_DISPATCH_ZONE_SEQUENTIAL,
     OperatorAbort,
     TASK_TYPE_DUAL,
     TASK_TYPE_SINGLE,
@@ -37,6 +39,7 @@ class ManifestSession:
     haptic_plan_config_path: Path
     plan_id: str = ""
     condition_id: str = ""
+    cue_dispatch_mode: str = CUE_DISPATCH_ZONE_SEQUENTIAL
 
 
 @dataclass(frozen=True)
@@ -275,7 +278,7 @@ def validate_participant_manifest(manifest: ParticipantManifest) -> ManifestVali
 
     labels: set[str] = set()
     orders: set[int] = set()
-    condition_keys: set[tuple[str, str, str]] = set()
+    condition_keys: set[tuple[str, str, str, str]] = set()
     for session in manifest.sessions:
         if not session.session_label:
             result.errors.append("session_label is required.")
@@ -287,6 +290,10 @@ def validate_participant_manifest(manifest: ParticipantManifest) -> ManifestVali
         orders.add(session.order)
         if session.task_type not in TASK_TYPES:
             result.errors.append(f"{session.session_label}: unsupported task_type {session.task_type}")
+        if session.cue_dispatch_mode not in CUE_DISPATCH_MODES:
+            result.errors.append(
+                f"{session.session_label}: unsupported cue_dispatch_mode {session.cue_dispatch_mode}"
+            )
         if session.feedback_type not in FEEDBACK_TYPES:
             result.errors.append(
                 f"{session.session_label}: unsupported feedback_type {session.feedback_type}"
@@ -309,8 +316,24 @@ def validate_participant_manifest(manifest: ParticipantManifest) -> ManifestVali
             result.errors.append(
                 f"{session.session_label}: plan_id {session.plan_id} != loaded {plan.plan_id}"
             )
+        if session.cue_dispatch_mode == CUE_DISPATCH_ZONE_SEQUENTIAL:
+            missing_zone = [
+                event.name
+                for event in plan.events
+                if not str(event.trigger_zone or "").strip()
+            ]
+            if missing_zone:
+                result.errors.append(
+                    f"{session.session_label}: zone_sequential requires trigger_zone for "
+                    + ", ".join(missing_zone)
+                )
         _validate_feedback_config(session, config, result)
-        duplicate_key = (session.task_type, session.feedback_type, plan.plan_id)
+        duplicate_key = (
+            session.task_type,
+            session.feedback_type,
+            session.cue_dispatch_mode,
+            plan.plan_id,
+        )
         if duplicate_key in condition_keys:
             result.warnings.append(
                 f"duplicate task/feedback/plan combination: {duplicate_key}"
@@ -336,6 +359,7 @@ def prepare_session_config(
     session_config["participant_id"] = manifest.participant_id
     session_config["condition_id"] = session.condition_id or _condition_id(session, plan.plan_id)
     session_config["task_type"] = _normalize_manifest_task_type(session.task_type)
+    session_config["cue_dispatch_mode"] = session.cue_dispatch_mode
     session_config["session_seed"] = session_seed
     session_config["session_id_prefix"] = f"{manifest.run_id}_{session.order:02d}_{session.session_label}"
     session_config["output_root"] = str(run_dir / "sessions")
@@ -373,6 +397,9 @@ def _manifest_session_from_dict(payload: Any, *, base_dir: Path) -> ManifestSess
         haptic_plan_config_path=_resolve_path(payload.get("haptic_plan_config"), base_dir=base_dir),
         plan_id=str(payload.get("plan_id", "") or "").strip(),
         condition_id=str(payload.get("condition_id", "") or "").strip(),
+        cue_dispatch_mode=_normalize_cue_dispatch_mode(
+            payload.get("cue_dispatch_mode", CUE_DISPATCH_ZONE_SEQUENTIAL)
+        ),
     )
 
 
@@ -440,6 +467,7 @@ def _prepared_session_row(prepared: PreparedSession) -> dict[str, Any]:
         "haptic_plan_config": str(session.haptic_plan_config_path),
         "prepared_config": str(prepared.config_path),
         "condition_id": session.condition_id or _condition_id(session, prepared.expected_plan_id),
+        "cue_dispatch_mode": session.cue_dispatch_mode,
         "session_seed": prepared.session_seed,
         "haptic_seed": prepared.haptic_seed,
         "nback_seed": prepared.nback_seed,
@@ -450,6 +478,11 @@ def _prepared_session_row(prepared: PreparedSession) -> dict[str, Any]:
 
 
 def _condition_id(session: ManifestSession, plan_id: str) -> str:
+    if session.cue_dispatch_mode != CUE_DISPATCH_ZONE_SEQUENTIAL:
+        return (
+            f"{session.feedback_type}_{_normalize_manifest_task_type(session.task_type)}_"
+            f"{session.cue_dispatch_mode}_{plan_id}"
+        )
     return f"{session.feedback_type}_{_normalize_manifest_task_type(session.task_type)}_{plan_id}"
 
 
@@ -458,6 +491,16 @@ def _normalize_manifest_task_type(value: str) -> str:
     if task == "tactile_only":
         return TASK_TYPE_SINGLE
     return task
+
+
+def _normalize_cue_dispatch_mode(value: Any) -> str:
+    mode = str(value if value is not None else CUE_DISPATCH_ZONE_SEQUENTIAL).strip().lower()
+    if mode not in CUE_DISPATCH_MODES:
+        raise ValueError(
+            "cue_dispatch_mode must be one of: "
+            + ", ".join(sorted(CUE_DISPATCH_MODES))
+        )
+    return mode
 
 
 def _completed_count(rows: list[dict[str, Any]]) -> int:

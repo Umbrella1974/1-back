@@ -59,6 +59,90 @@ def test_manifest_validate_only_prepares_session_configs(tmp_path) -> None:
     assert payload["calibration_reuse"]["calibration_id"] == "P001_exp2_cal_v01"
 
 
+def test_manifest_writes_cue_dispatch_mode_to_prepared_config(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "combined.yaml", feedback="combined")
+    plan = _write_plan(tmp_path / "combined-plan.yaml", plan_id="combined_plan_1", modality="vibration")
+    manifest_path = _write_manifest(
+        tmp_path / "manifest.yaml",
+        tmp_path=tmp_path,
+        sessions=[
+            {
+                "session_label": "combined_single_01",
+                "order": 1,
+                "task_type": "single",
+                "feedback_type": "combined",
+                "cue_dispatch_mode": "timed_grouped",
+                "config": str(config),
+                "haptic_plan_config": str(plan),
+                "plan_id": "combined_plan_1",
+            },
+        ],
+    )
+
+    run_dir = run_participant_manifest(manifest_path, validate_only=True)
+    summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+    prepared_config = Path(summary["sessions"][0]["prepared_config"])
+    payload = yaml.safe_load(prepared_config.read_text(encoding="utf-8"))
+
+    assert summary["sessions"][0]["cue_dispatch_mode"] == "timed_grouped"
+    assert payload["session"]["cue_dispatch_mode"] == "timed_grouped"
+
+
+def test_manifest_allows_no_zone_plan_only_for_timed_grouped(tmp_path) -> None:
+    config = _write_dualtask_config(tmp_path / "combined.yaml", feedback="combined")
+    no_zone_plan = _write_plan(
+        tmp_path / "combined-nozone.yaml",
+        plan_id="combined_nozone_1",
+        modality="vibration",
+    )
+    payload = yaml.safe_load(no_zone_plan.read_text(encoding="utf-8"))
+    for event in payload["events"]:
+        event.pop("trigger_zone", None)
+    payload.pop("zones")
+    no_zone_plan.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    timed_manifest = load_participant_manifest(
+        _write_manifest(
+            tmp_path / "timed_manifest.yaml",
+            tmp_path=tmp_path,
+            sessions=[
+                {
+                    "session_label": "combined_timed",
+                    "order": 1,
+                    "task_type": "single",
+                    "feedback_type": "combined",
+                    "cue_dispatch_mode": "timed_grouped",
+                    "config": str(config),
+                    "haptic_plan_config": str(no_zone_plan),
+                    "plan_id": "combined_nozone_1",
+                }
+            ],
+        )
+    )
+    zone_manifest = load_participant_manifest(
+        _write_manifest(
+            tmp_path / "zone_manifest.yaml",
+            tmp_path=tmp_path,
+            sessions=[
+                {
+                    "session_label": "combined_zone",
+                    "order": 1,
+                    "task_type": "single",
+                    "feedback_type": "combined",
+                    "config": str(config),
+                    "haptic_plan_config": str(no_zone_plan),
+                    "plan_id": "combined_nozone_1",
+                }
+            ],
+        )
+    )
+
+    assert validate_participant_manifest(timed_manifest).passed is True
+    zone_result = validate_participant_manifest(zone_manifest)
+    assert zone_result.passed is False
+    assert "zone_sequential requires trigger_zone" in zone_result.errors[0]
+
+
 def test_manifest_validation_rejects_feedback_config_mismatch(tmp_path) -> None:
     config = _write_dualtask_config(tmp_path / "only-motor.yaml", feedback="motor_only")
     plan = _write_plan(tmp_path / "matrix-plan.yaml", plan_id="matrix_plan_1", modality="matrix")

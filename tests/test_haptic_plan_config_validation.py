@@ -223,6 +223,33 @@ def test_trial_window_and_wrist_neutral_gate_round_trip() -> None:
     assert second.to_dict()["events"][2]["nback_trial_window"] == [20, 25]
 
 
+def test_simultaneous_group_round_trips() -> None:
+    payload = _valid_plan()
+    payload["events"][0]["simultaneous_group"] = "g1"
+    payload["events"][1]["simultaneous_group"] = "g1"
+
+    plan = haptic_plan_config_from_dict(payload)
+    second = haptic_plan_config_from_dict(plan.to_dict())
+
+    assert second.events[0].simultaneous_group == "g1"
+    assert second.events[1].simultaneous_group == "g1"
+    assert second.to_dict()["events"][0]["simultaneous_group"] == "g1"
+
+
+def test_no_zone_event_can_be_parsed_for_timed_grouped_mode() -> None:
+    payload = _valid_plan()
+    for event in payload["events"]:
+        event.pop("trigger_zone", None)
+        event.pop("onset_policy", None)
+    payload.pop("zones")
+
+    plan = haptic_plan_config_from_dict(payload)
+
+    assert [event.trigger_zone for event in plan.events] == ["", "", "", "", ""]
+    assert "zones" in plan.to_dict()
+    assert plan.to_dict()["events"][0].get("trigger_zone") is None
+
+
 def test_matrix_sequence_round_trips() -> None:
     payload = _valid_plan()
     payload["events"][2].pop("channel_list")
@@ -239,6 +266,33 @@ def test_matrix_sequence_round_trips() -> None:
     assert second.events[2].matrix_sequence[0].channel_list == (1, 2, 3)
     assert second.events[2].matrix_sequence[1].offset_ms == 120
     assert second.events[2].to_dict()["matrix_sequence"][1]["channel_list"] == [4, 5, 6]
+
+
+def test_matrix_sequence_step_label_round_trips() -> None:
+    payload = _valid_plan()
+    payload["events"][2].pop("channel_list")
+    payload["events"][2]["duration_ms"] = 200
+    payload["events"][2]["matrix_sequence"] = [
+        {"offset_ms": 0, "channel_list": [1, 2, 3], "step_label": "contact_down"},
+        {"offset_ms": 120, "channel_list": [4, 5, 6], "step_label": "contact_up"},
+    ]
+
+    plan = haptic_plan_config_from_dict(payload)
+    second = haptic_plan_config_from_dict(plan.to_dict())
+
+    assert second.events[2].matrix_sequence[0].step_label == "contact_down"
+    assert second.events[2].matrix_sequence[1].step_label == "contact_up"
+    assert second.to_dict()["events"][2]["matrix_sequence"][0]["step_label"] == "contact_down"
+
+
+def test_matrix_sequence_step_label_defaults_to_empty() -> None:
+    payload = _valid_plan()
+    payload["events"][2].pop("channel_list")
+    payload["events"][2]["matrix_sequence"] = [{"offset_ms": 0, "channel_list": [1]}]
+
+    plan = haptic_plan_config_from_dict(payload)
+
+    assert plan.events[2].matrix_sequence[0].step_label == ""
 
 
 def test_matrix_sequence_rejects_unsorted_offsets() -> None:

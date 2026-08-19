@@ -18,7 +18,11 @@ from haptic_plan_config import (
     haptic_defaults_from_dict,
     load_haptic_plan_config,
 )
-from haptic_trial_scheduler import HapticTrialScheduler, HapticTrialSchedulerConfig
+from haptic_trial_scheduler import (
+    HapticTrialScheduler,
+    HapticTrialSchedulerConfig,
+    TimedGroupedHapticScheduler,
+)
 from manus_pinch_input import ManusOnlyPinchInput, ManusPinchInputConfig, PinchInputSample
 from nback_dualtask_runner import (
     NBACK_PHASE_BLANK,
@@ -66,6 +70,9 @@ DEFAULT_TICK_INTERVAL_MS = 10.0
 TASK_TYPE_DUAL = "dual"
 TASK_TYPE_SINGLE = "single"
 TASK_TYPES = {TASK_TYPE_DUAL, TASK_TYPE_SINGLE, "tactile_only"}
+CUE_DISPATCH_ZONE_SEQUENTIAL = "zone_sequential"
+CUE_DISPATCH_TIMED_GROUPED = "timed_grouped"
+CUE_DISPATCH_MODES = {CUE_DISPATCH_ZONE_SEQUENTIAL, CUE_DISPATCH_TIMED_GROUPED}
 CALIBRATION_FAILURE_MESSAGE = (
     "Calibration failed: max-min too small.\n"
     "Check target_finger_node_id, hand gesture, and whether you are opening/pinching the configured fingers."
@@ -293,6 +300,7 @@ class PinchHaptic1BackCoreResult:
     release_emit_trial_number: int | None = None
     haptic_policy_warnings: tuple[str, ...] = ()
     task_type: str = TASK_TYPE_DUAL
+    cue_dispatch_mode: str = CUE_DISPATCH_ZONE_SEQUENTIAL
     nback_enabled: bool = True
     trial_gate_enabled: bool = True
     digit_guard_enabled: bool = True
@@ -563,6 +571,7 @@ def run_pinch_haptic_1back_core(
         release_emit_trial_number=release_gate_state.release_emit_trial_number,
         haptic_policy_warnings=tuple(release_gate_state.warnings),
         task_type=task,
+        cue_dispatch_mode=CUE_DISPATCH_ZONE_SEQUENTIAL,
         nback_enabled=nback_enabled,
         trial_gate_enabled=trial_gate_enabled,
         digit_guard_enabled=digit_guard_enabled,
@@ -590,6 +599,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
     feedback_config = _haptic_feedback_display_from_dualtask_config(config)
     seed_info = session_seed_info_from_config(session_config)
     task_type = _normalize_task_type(session_config.get("task_type", TASK_TYPE_DUAL))
+    cue_dispatch_mode = _normalize_cue_dispatch_mode(
+        session_config.get("cue_dispatch_mode", CUE_DISPATCH_ZONE_SEQUENTIAL)
+    )
     nback_enabled = task_type == TASK_TYPE_DUAL
     trial_gate_enabled = nback_enabled
     digit_guard_enabled = nback_enabled
@@ -911,6 +923,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             wrist_rotation_config=wrist_rotation_config,
             wrist_rotation_calibration=wrist_calibration,
             task_type=task_type,
+            cue_dispatch_mode=cue_dispatch_mode,
             flush_events=manus_queue_flush_events,
         )
         total_haptic_events = formal_result.total_haptic_events
@@ -936,6 +949,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                 "participant_id": session_config.get("participant_id", ""),
                 "condition_id": session_config.get("condition_id", ""),
                 "task_type": task_type,
+                "cue_dispatch_mode": cue_dispatch_mode,
                 "nback_enabled": nback_enabled,
                 "trial_gate_enabled": trial_gate_enabled,
                 "digit_guard_enabled": digit_guard_enabled,
@@ -1693,9 +1707,11 @@ def _run_live_formal_phase(
     wrist_rotation_config: WristRotationConfig | None = None,
     wrist_rotation_calibration: WristRotationCalibrationResult | None = None,
     task_type: str = TASK_TYPE_DUAL,
+    cue_dispatch_mode: str = CUE_DISPATCH_ZONE_SEQUENTIAL,
     flush_events: list[dict[str, Any]] | None = None,
 ) -> PinchHaptic1BackCoreResult:
     task = _normalize_task_type(task_type)
+    dispatch_mode = _normalize_cue_dispatch_mode(cue_dispatch_mode)
     nback_enabled = task == TASK_TYPE_DUAL
     trial_gate_enabled = nback_enabled
     digit_guard_enabled = nback_enabled
@@ -1703,7 +1719,11 @@ def _run_live_formal_phase(
         raise ValueError("nback_timeline is required when task_type=dual.")
     if nback_enabled and display is None:
         raise ValueError("display is required when task_type=dual.")
-    scheduler = HapticTrialScheduler(plan, scheduler_config)
+    scheduler = _make_haptic_scheduler(
+        plan,
+        scheduler_config,
+        cue_dispatch_mode=dispatch_mode,
+    )
     policy = session_end_policy or SessionEndPolicy()
     feedback_config = haptic_feedback_display or HapticFeedbackDisplayConfig()
     episode_state = HapticEpisodeState()
@@ -1827,18 +1847,27 @@ def _run_live_formal_phase(
                     ),
                     haptic_debug_config=debug_config,
                 )
-            emitted = _gate_haptic_events(
-                emitted,
-                policy=policy,
-                gate_state=release_gate_state,
-                scheduler=scheduler,
-                nback_timeline=nback_timeline,
-                trial_gate_enabled=trial_gate_enabled,
-                now_ms=now_ms,
-                latest_zone=latest_zone,
-                latest_wrist_sample=latest_wrist_sample,
-            )
-            if trial_gate_enabled:
+            if dispatch_mode == CUE_DISPATCH_TIMED_GROUPED:
+                emitted = _annotate_timed_grouped_events(
+                    emitted,
+                    nback_timeline=nback_timeline,
+                    now_ms=now_ms,
+                    latest_zone=latest_zone,
+                    latest_wrist_sample=latest_wrist_sample,
+                )
+            else:
+                emitted = _gate_haptic_events(
+                    emitted,
+                    policy=policy,
+                    gate_state=release_gate_state,
+                    scheduler=scheduler,
+                    nback_timeline=nback_timeline,
+                    trial_gate_enabled=trial_gate_enabled,
+                    now_ms=now_ms,
+                    latest_zone=latest_zone,
+                    latest_wrist_sample=latest_wrist_sample,
+                )
+            if trial_gate_enabled and dispatch_mode == CUE_DISPATCH_ZONE_SEQUENTIAL:
                 _append_prerelease_deadline_warning_if_needed(
                     policy=policy,
                     gate_state=release_gate_state,
@@ -1847,7 +1876,7 @@ def _run_live_formal_phase(
                     now_ms=now_ms,
                     post_release_started_ms=post_release_started_ms,
                 )
-        for event in emitted:
+        for event in _ordered_haptic_events_for_send(emitted):
             _record_haptic_event(
                 event,
                 sender=sender,
@@ -2323,6 +2352,7 @@ def _haptic_end_summary_fields(
             "haptic_tcp_failure_count": 0,
             "haptic_tcp_failure_errors": [],
             "haptic_policy_warnings": [],
+            "cue_dispatch_mode": CUE_DISPATCH_ZONE_SEQUENTIAL,
         }
     return {
         "end_reason": result.end_reason or end_reason,
@@ -2360,6 +2390,7 @@ def _haptic_end_summary_fields(
         "release_emit_trial_number": result.release_emit_trial_number,
         "haptic_policy_warnings": list(result.haptic_policy_warnings),
         "task_type": result.task_type,
+        "cue_dispatch_mode": result.cue_dispatch_mode,
         "nback_enabled": result.nback_enabled,
         "trial_gate_enabled": result.trial_gate_enabled,
         "digit_guard_enabled": result.digit_guard_enabled,
@@ -2495,6 +2526,27 @@ def _normalize_task_type(value: Any) -> str:
     return task_type
 
 
+def _normalize_cue_dispatch_mode(value: Any) -> str:
+    mode = str(value if value is not None else CUE_DISPATCH_ZONE_SEQUENTIAL).strip().lower()
+    if mode not in CUE_DISPATCH_MODES:
+        raise ValueError(
+            "session.cue_dispatch_mode must be one of: "
+            + ", ".join(sorted(CUE_DISPATCH_MODES))
+        )
+    return mode
+
+
+def _make_haptic_scheduler(
+    plan: HapticPlanConfig,
+    scheduler_config: HapticTrialSchedulerConfig,
+    *,
+    cue_dispatch_mode: str,
+) -> Any:
+    if cue_dispatch_mode == CUE_DISPATCH_TIMED_GROUPED:
+        return TimedGroupedHapticScheduler(plan, scheduler_config)
+    return HapticTrialScheduler(plan, scheduler_config)
+
+
 def _formal_phase_tick(display: Any | None) -> None:
     if display is not None:
         display.tick(60)
@@ -2545,6 +2597,59 @@ def _gate_haptic_events(
             break
         ready.append(released)
     return ready
+
+
+def _annotate_timed_grouped_events(
+    events: list[Any],
+    *,
+    nback_timeline: NBackTimeline | None,
+    now_ms: float,
+    latest_zone: str,
+    latest_wrist_sample: Any | None,
+) -> list[Any]:
+    if not events:
+        return []
+    emit_trial = (
+        _nback_trial_number_at(nback_timeline, now_ms)
+        if nback_timeline is not None
+        else None
+    )
+    annotated: list[Any] = []
+    for event in events:
+        timing_note = str(getattr(event, "timing_note", "") or "")
+        notes = [item for item in (timing_note, "timed_grouped_no_zone_gate") if item]
+        annotated.append(
+            replace(
+                event,
+                actual_zone_at_emit=str(latest_zone),
+                emit_trial_number=emit_trial,
+                trial_gate_enabled=False,
+                trial_gate_ignored=getattr(event, "nback_trial_window", None) is not None,
+                wrist_neutral_gate_required=False,
+                held_by_wrist_neutral_gate=False,
+                wrist_neutral_gate_passed=None,
+                wrist_neutral_wait_ms=None,
+                wrist_lr_class_at_emit=_wrist_lr_class(latest_wrist_sample),
+                wrist_up_down_class_at_emit=_wrist_up_down_class(latest_wrist_sample),
+                timing_note=";".join(notes),
+            )
+        )
+    return annotated
+
+
+def _ordered_haptic_events_for_send(events: list[Any]) -> list[Any]:
+    if not events:
+        return []
+    grouped = any(str(getattr(event, "simultaneous_group", "") or "") for event in events)
+    if not grouped:
+        return list(events)
+    return sorted(
+        events,
+        key=lambda event: (
+            0 if str(getattr(event, "modality", "")) == "vibration" else 1,
+            int(getattr(event, "event_index", 0)),
+        ),
+    )
 
 
 def _gate_single_haptic_event(
@@ -2975,7 +3080,7 @@ def _haptic_sequence_active(
     return bool(
         episode_state.active
         or getattr(scheduler, "state", "")
-        in {"PENDING_CONTACT", "WAIT_CLOSED_ZONE", "PENDING_PLAN_EVENT"}
+        in {"PENDING_CONTACT", "WAIT_CLOSED_ZONE", "PENDING_PLAN_EVENT", "PENDING_TIMED_GROUP"}
     )
 
 
