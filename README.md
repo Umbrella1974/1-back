@@ -146,6 +146,28 @@ events:
     onset_gap_after_previous_ms: [8000, 12000]
 ```
 
+如果要把多个 gesture 放进同一个 event（例如 contact 和 up 间隔 100ms、或 right 后面跟两步 slip），用 `matrix_sequence`，每步用 `step_label` 标注语义：
+
+```yaml
+- name: right-slip
+  modality: matrix
+  matrix_sequence:
+    - offset_ms: 0
+      channel_list: [87, 88, 89]
+      step_label: right
+    - offset_ms: 100
+      channel_list: [82, 84, 87]
+      step_label: slip
+    - offset_ms: 200
+      channel_list: [83, 86, 89]
+      step_label: slip
+  duration_ms: 1000
+```
+
+- `offset_ms` 相对本 event 的 onset；每步会作为独立的 `haptic_events.csv` 行记录。
+- `step_label` 是可选字段，写进 CSV 的 `matrix_sequence_step_label` 列，用于区分同一个 event 里不同 gesture（如 contact/up、right/slip）。统计时直接按这列分组，不用解析 `event_name` 里的 `-` 连接符。
+- 第一个 event 名必须仍是 `contact`、最后一个仍是 `release`；中间 event 名可自由起（如 `right-slip`），只作为标签。
+
 `single` 模式下会显式关闭：
 
 - n-back trial window gate
@@ -325,6 +347,7 @@ wrist_rotation:
 
 - `time_ready_ms`：时间 scheduler 本来准备发出 event 的时刻。
 - `actual_emit_ms` / `monotonic_ms`：gate 后真正发出的时刻。
+- `queued_monotonic_ms` / `sent_monotonic_ms`：TCP 层真实时间戳 —— 命令进入发送队列（queued）和真正 `sendall` 出去（sent）的 `time.monotonic()` 时刻。和 `actual_emit_ms`（调度计划时刻）不同，用于复核触觉信号实际发出的准确时间。
 - `planned_emit_trial_number`：`time_ready_ms` 所在的 1-back 试次。
 - `emit_trial_number`：真正发出时所在的 1-back 试次。
 - `trial_gate_enabled`：本次运行是否启用 n-back trial gate；`single` 模式为 `False`。
