@@ -70,6 +70,7 @@ def _plan() -> dict:
                 "name": "left_1",
                 "modality": "matrix",
                 "channel_list": [1, 2, 3],
+                "output": {"mode": "hold"},
                 "trigger_zone": "closed_zone",
             },
             {

@@ -64,6 +64,7 @@ def test_disabled_sender_records_matrix_channels_from_plan() -> None:
                     "name": "left",
                     "modality": "matrix",
                     "channel_list": [1, 2, 3],
+                    "output": {"mode": "hold"},
                     "duration_ms": 1,
                     "trigger_zone": "closed_zone",
                     "onset_policy": {"type": "after_previous", "gap_ms": 0},

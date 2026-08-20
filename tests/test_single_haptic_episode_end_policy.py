@@ -476,6 +476,7 @@ def _plan_with_cue(cue_overrides: dict) -> object:
         "name": "cue",
         "modality": "matrix",
         "channel_list": [1, 2, 3],
+        "output": {"mode": "hold"},
         "duration_ms": 1,
         "trigger_zone": "closed_zone",
         "onset_gap_after_previous_ms": [0, 0],

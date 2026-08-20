@@ -15,9 +15,11 @@ events:
       - offset_ms: 0
         channel_list: [81, 82, 83, 84, 86, 87, 88, 89]
         step_label: contact
+        output: {mode: hold}
       - offset_ms: 100
         channel_list: [82, 84, 87]
         step_label: up
+        output: {mode: hold}
     duration_ms: 2500
     onset_delay_ms: [1000, 2000]
     trigger_zone: open_zone
@@ -28,11 +30,12 @@ events:
       - offset_ms: 0
         channel_list: [87, 88, 89]
         step_label: right
+        output: {mode: hold}
       - offset_ms: 100
         channel_list: [82,84,87]
         step_label: slip
-      - offset_ms: 200   
-        channel_list: [83,86,89]
+        output: {mode: alternate, step_ms: 100}
+      - channel_list: [83,86,89]
         step_label: slip
     duration_ms: 1000
     trigger_zone: closed_zone
@@ -41,6 +44,7 @@ events:
   - name: release
     modality: matrix
     channel_list: [85]
+    output: {mode: auto_off, duration_ms: 650}
     trigger_zone: closed_zone
     duration_ms: 1000
 

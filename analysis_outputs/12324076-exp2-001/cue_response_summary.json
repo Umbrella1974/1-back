@@ -1,0 +1,57 @@
+{
+  "condition_counts": {
+    "motor-only": 49
+  },
+  "cue_count": 49,
+  "cue_response_diagnostic_count": 49,
+  "cycle_quality_counts": {
+    "complete": 35,
+    "incomplete_contact_return": 1,
+    "not_applicable": 13
+  },
+  "detector_version": "pilot_v0.3",
+  "event_quality_counts": {
+    "contact:clean": 7,
+    "down:clean": 6,
+    "down:contaminated": 1,
+    "left:clean": 2,
+    "left:contaminated": 5,
+    "release:clean": 7,
+    "right:clean": 7,
+    "slip:clean": 6,
+    "slip:partial_no_contact_return": 1,
+    "up:contaminated": 7
+  },
+  "first_excursion_counts": {
+    "contact:pinch": 7,
+    "down:down": 6,
+    "down:none": 1,
+    "left:left": 6,
+    "left:right": 1,
+    "release:pinch": 1,
+    "release:release": 6,
+    "right:right": 7,
+    "slip:pinch": 7,
+    "up:down": 4,
+    "up:up": 3
+  },
+  "online_wrist_gate_false_count": 0,
+  "online_wrist_gate_false_offline_neutral_count": 0,
+  "participant_id_missing_count": 0,
+  "quality_counts": {
+    "clean": 35,
+    "contaminated": 13,
+    "partial_no_contact_return": 1
+  },
+  "response_quality_counts": {
+    "clean": 36,
+    "contaminated": 13
+  },
+  "stable_first_excursion_mismatch_count": 10,
+  "task_type_counts": {
+    "dual": 42,
+    "single": 7
+  },
+  "up_diagnostic_count": 7,
+  "wrist_audit_count": 28
+}

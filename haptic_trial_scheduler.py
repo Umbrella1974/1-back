@@ -7,7 +7,11 @@ import random
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
-from haptic_plan_config import HapticPlanConfig, HapticPlanEvent
+from haptic_plan_config import (
+    HapticPlanConfig,
+    HapticPlanEvent,
+    MatrixOutputPolicy,
+)
 
 
 WAIT_OPEN_ZONE = "WAIT_OPEN_ZONE"
@@ -80,6 +84,7 @@ class ScheduledHapticEvent:
     end_command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     matrix_sequence: tuple[Any, ...] = field(default_factory=tuple)
+    output: MatrixOutputPolicy | None = None
     simultaneous_group: str = ""
     duration_ms: int = 0
     sampled_duration_ms: int | None = None
@@ -135,6 +140,10 @@ class ScheduledHapticEvent:
             )
             for step in self.matrix_sequence
         ]
+        if self.output is not None:
+            payload["output"] = self.output.to_dict()
+        else:
+            payload.pop("output", None)
         if self.nback_trial_window is not None:
             payload["nback_trial_window"] = list(self.nback_trial_window)
         return payload
@@ -445,6 +454,7 @@ class HapticTrialScheduler:
             end_command_id=event.end_command_id,
             channel_list=event.channel_list,
             matrix_sequence=event.matrix_sequence,
+            output=event.output,
             duration_ms=pending.sampled_duration_ms,
             sampled_duration_ms=pending.sampled_duration_ms,
             global_default_used=pending.global_default_used,
@@ -675,6 +685,7 @@ class TimedGroupedHapticScheduler:
                 end_command_id=event.end_command_id,
                 channel_list=event.channel_list,
                 matrix_sequence=event.matrix_sequence,
+                output=event.output,
                 simultaneous_group=pending.group.simultaneous_group,
                 duration_ms=duration_ms,
                 sampled_duration_ms=duration_ms,

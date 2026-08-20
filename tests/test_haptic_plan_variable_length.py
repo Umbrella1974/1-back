@@ -58,6 +58,7 @@ def _plan(middle_names: list[str]) -> dict:
                     "name": name,
                     "modality": "matrix",
                     "channel_list": [1, 2, 3],
+                    "output": {"mode": "hold"},
                     "duration_ms": 1,
                     "trigger_zone": "closed_zone",
                 }

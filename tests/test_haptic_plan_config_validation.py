@@ -47,6 +47,7 @@ def _valid_plan() -> dict:
                 "name": "left",
                 "modality": "matrix",
                 "channel_list": [9, 8, 7],
+                "output": {"mode": "hold"},
                 "duration_ms": 800,
                 "trigger_zone": "closed_zone",
                 "onset_policy": {"type": "after_previous", "gap_ms": 100},
@@ -55,6 +56,7 @@ def _valid_plan() -> dict:
                 "name": "right",
                 "modality": "matrix",
                 "channel_list": [5, 6, 7],
+                "output": {"mode": "hold"},
                 "duration_ms": 800,
                 "trigger_zone": "closed_zone",
                 "onset_policy": {"type": "after_previous", "gap_ms": 100},
@@ -381,6 +383,7 @@ def test_scheduler_timing_schema_can_omit_onset_policy() -> None:
                     "name": "left",
                     "modality": "matrix",
                     "channel_list": [1, 2, 3],
+                    "output": {"mode": "hold"},
                     "duration_ms": 800,
                     "trigger_zone": "closed_zone",
                     "onset_gap_after_previous_ms": [350, 450],
@@ -408,3 +411,190 @@ def test_scheduler_timing_schema_can_omit_onset_policy() -> None:
     assert plan.events[0].onset_delay_ms == (600, 700)
     assert plan.events[1].onset_policy.type == "after_previous"
     assert plan.events[1].onset_gap_after_previous_ms == (350, 450)
+
+
+def _matrix_output_plan(
+    *,
+    event_output: dict | None = None,
+    matrix_output: dict | None = None,
+    channel_list: list[int] | None = None,
+    matrix_sequence: list[dict] | None = None,
+) -> dict:
+    event: dict = {
+        "name": "left",
+        "modality": "matrix",
+        "duration_ms": 800,
+        "trigger_zone": "closed_zone",
+    }
+    if channel_list is not None:
+        event["channel_list"] = channel_list
+    if matrix_sequence is not None:
+        event["matrix_sequence"] = matrix_sequence
+    if event_output is not None:
+        event["output"] = event_output
+    payload = {
+        "plan_id": "output_policy",
+        "description": "",
+        "random_seed": 1,
+        "timing": {
+            "contact_onset_delay_ms": [0, 0],
+            "inter_event_gap_ms": [0, 0],
+            "refractory_ms": 0,
+        },
+        "events": [
+            {
+                "name": "contact",
+                "modality": "vibration",
+                "command_label": "contact_enter",
+                "command_id": 1,
+                "duration_ms": 1,
+                "trigger_zone": "open_zone",
+            },
+            event,
+            {
+                "name": "release",
+                "modality": "vibration",
+                "command_label": "contact_exit",
+                "command_id": 2,
+                "duration_ms": 1,
+                "trigger_zone": "closed_zone",
+            },
+        ],
+        "zones": {
+            "open_zone": {"lower": "auto_a", "upper": "auto_max"},
+            "closed_zone": {"lower": "auto_min", "upper": "auto_a"},
+        },
+    }
+    if matrix_output is not None:
+        payload["matrix_output"] = matrix_output
+    return payload
+
+
+def test_matrix_output_auto_off_requires_duration_ms() -> None:
+    with pytest.raises(ValueError, match="auto_off mode requires duration_ms"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(event_output={"mode": "auto_off"})
+        )
+
+
+def test_matrix_output_alternate_requires_step_ms() -> None:
+    with pytest.raises(ValueError, match="alternate mode requires step_ms"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(
+                event_output={"mode": "alternate"},
+                matrix_sequence=[
+                    {"offset_ms": 0, "channel_list": [1, 2]},
+                ],
+            )
+        )
+
+
+def test_matrix_output_hold_rejects_extra_fields() -> None:
+    with pytest.raises(ValueError, match="hold mode does not take"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(event_output={"mode": "hold", "duration_ms": 650})
+        )
+
+
+def test_matrix_output_auto_off_rejects_step_ms() -> None:
+    with pytest.raises(ValueError, match="auto_off mode does not take step_ms"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(
+                event_output={"mode": "auto_off", "duration_ms": 650, "step_ms": 100}
+            )
+        )
+
+
+def test_matrix_output_alternate_rejects_duration_ms() -> None:
+    with pytest.raises(ValueError, match="alternate mode does not take duration_ms"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(
+                event_output={"mode": "alternate", "step_ms": 100, "duration_ms": 650},
+                matrix_sequence=[{"offset_ms": 0, "channel_list": [1, 2]}],
+            )
+        )
+
+
+def test_matrix_output_unknown_mode_rejected() -> None:
+    with pytest.raises(ValueError, match="must be one of"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(event_output={"mode": "blink"})
+        )
+
+
+def test_matrix_output_unknown_key_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(event_output={"mode": "hold", "loop": True})
+        )
+
+
+@pytest.mark.parametrize("duration_ms", [30, 1600, 0, -50])
+def test_matrix_output_auto_off_invalid_duration(duration_ms: int) -> None:
+    with pytest.raises(ValueError):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(
+                event_output={"mode": "auto_off", "duration_ms": duration_ms}
+            )
+        )
+
+
+def test_matrix_output_on_non_matrix_event_rejected() -> None:
+    payload = _matrix_output_plan(channel_list=[1, 2, 3])
+    payload["events"][0]["output"] = {"mode": "hold"}  # contact is vibration
+    with pytest.raises(ValueError, match="output is only valid on matrix events"):
+        haptic_plan_config_from_dict(payload)
+
+
+def test_matrix_output_single_channel_alternate_rejected() -> None:
+    with pytest.raises(ValueError, match="cannot use alternate mode"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(
+                event_output={"mode": "alternate", "step_ms": 100},
+                channel_list=[1, 2, 3],
+            )
+        )
+
+
+def test_matrix_output_default_resolves_onto_single_channel_event() -> None:
+    plan = haptic_plan_config_from_dict(
+        _matrix_output_plan(
+            matrix_output={"default": {"mode": "auto_off", "duration_ms": 650}},
+            channel_list=[1, 2, 3],
+        )
+    )
+    assert plan.events[1].output.mode == "auto_off"
+    assert plan.events[1].output.duration_ms == 650
+
+
+def test_matrix_output_default_requires_default_key() -> None:
+    with pytest.raises(ValueError, match="matrix_output.default is required"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(matrix_output={})
+        )
+
+
+def test_matrix_output_unknown_top_level_key_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown matrix_output keys"):
+        haptic_plan_config_from_dict(
+            _matrix_output_plan(matrix_output={"global": {"mode": "hold"}})
+        )
+
+
+def test_matrix_output_alternate_run_inherits_continuation_steps() -> None:
+    plan = haptic_plan_config_from_dict(
+        _matrix_output_plan(
+            matrix_sequence=[
+                {
+                    "offset_ms": 0,
+                    "channel_list": [1, 2],
+                    "output": {"mode": "alternate", "step_ms": 100},
+                },
+                {"channel_list": [3, 4]},
+                {"channel_list": [5, 6]},
+            ]
+        )
+    )
+    steps = plan.events[1].matrix_sequence
+    assert [step.output.mode for step in steps] == ["alternate", "alternate", "alternate"]
+    assert all(step.output.step_ms == 100 for step in steps)

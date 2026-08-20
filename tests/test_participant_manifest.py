@@ -462,6 +462,7 @@ def _write_plan(path: Path, *, plan_id: str, modality: str) -> Path:
             "name": "contact",
             "modality": "matrix",
             "channel_list": [1],
+            "output": {"mode": "hold"},
             "duration_ms": 100,
             "trigger_zone": "open_zone",
         }
@@ -479,6 +480,7 @@ def _write_plan(path: Path, *, plan_id: str, modality: str) -> Path:
             "name": "release",
             "modality": "matrix",
             "channel_list": [2],
+            "output": {"mode": "hold"},
             "duration_ms": 100,
             "trigger_zone": "closed_zone",
         }

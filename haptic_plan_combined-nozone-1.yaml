@@ -20,6 +20,7 @@ events:
   - name: up
     modality: matrix
     channel_list: [82, 84, 87]
+    output: {mode: hold}
     duration_ms: 1000
     trigger_zone: closed_zone
     simultaneous_group: g1
@@ -27,6 +28,7 @@ events:
   - name: right
     modality: matrix
     channel_list: [87, 88, 89]
+    output: {mode: hold}
     duration_ms: 1000
     trigger_zone: closed_zone
     simultaneous_group: g2

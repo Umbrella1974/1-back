@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from vendor_exp2_abc.matrix_haptic_protocol import duration_ms_to_duration_code
 
 
 LEGAL_MODALITIES = {"vibration", "matrix"}
 LEGAL_ONSET_POLICY_TYPES = {"when_enter_zone", "after_zone_transition", "after_previous"}
 AUTO_ZONE_VALUES = {"auto_min", "auto_a", "auto_max"}
 MAX_MATRIX_SEQUENCE_STEPS = 32
+MATRIX_OUTPUT_MODES = {"hold", "auto_off", "alternate"}
 
 
 @dataclass(frozen=True)
@@ -27,17 +30,38 @@ class HapticOnsetPolicy:
 
 
 @dataclass(frozen=True)
+class MatrixOutputPolicy:
+    """How one matrix output is driven: hold / auto_off / alternate."""
+
+    mode: str
+    duration_ms: int | None = None  # auto_off only
+    step_ms: int | None = None      # alternate only
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"mode": self.mode}
+        if self.duration_ms is not None:
+            result["duration_ms"] = self.duration_ms
+        if self.step_ms is not None:
+            result["step_ms"] = self.step_ms
+        return result
+
+
+@dataclass(frozen=True)
 class MatrixSequenceStep:
     offset_ms: int
     channel_list: tuple[int, ...]
     step_label: str = ""
+    output: MatrixOutputPolicy | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "offset_ms": self.offset_ms,
             "channel_list": list(self.channel_list),
             "step_label": self.step_label,
         }
+        if self.output is not None:
+            result["output"] = self.output.to_dict()
+        return result
 
 
 @dataclass(frozen=True)
@@ -54,6 +78,7 @@ class HapticPlanEvent:
     end_command_id: int | None = None
     channel_list: tuple[int, ...] = field(default_factory=tuple)
     matrix_sequence: tuple[MatrixSequenceStep, ...] = field(default_factory=tuple)
+    output: MatrixOutputPolicy | None = None
     payload: dict[str, Any] | None = None
     simultaneous_group: str = ""
     onset_delay_ms: tuple[int, int] | None = None
@@ -70,6 +95,10 @@ class HapticPlanEvent:
             payload.pop("trigger_zone", None)
         if not self.matrix_sequence:
             payload.pop("matrix_sequence", None)
+        if self.output is not None:
+            payload["output"] = self.output.to_dict()
+        else:
+            payload.pop("output", None)
         if payload.get("duration_ms") is None:
             payload.pop("duration_ms", None)
         if self.duration_ms_range is not None:
@@ -151,9 +180,10 @@ class HapticPlanConfig:
     zones: dict[str, HapticZoneSpec]
     timing: HapticPlanTiming = field(default_factory=HapticPlanTiming)
     haptic_defaults: HapticDefaults = field(default_factory=HapticDefaults)
+    matrix_output_default: MatrixOutputPolicy | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "plan_id": self.plan_id,
             "description": self.description,
             "random_seed": self.random_seed,
@@ -162,6 +192,9 @@ class HapticPlanConfig:
             "events": [event.to_dict() for event in self.events],
             "zones": {name: zone.to_dict() for name, zone in self.zones.items()},
         }
+        if self.matrix_output_default is not None:
+            result["matrix_output"] = {"default": self.matrix_output_default.to_dict()}
+        return result
 
 
 def load_haptic_plan_config(path: str | Path) -> HapticPlanConfig:
@@ -185,6 +218,7 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
         "haptic_defaults",
         "events",
         "zones",
+        "matrix_output",
     }
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -201,7 +235,9 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
     timing = _parse_timing(payload.get("timing"))
     haptic_defaults = _parse_haptic_defaults(payload.get("haptic_defaults"), timing)
     zones = _parse_zones(payload.get("zones"))
+    matrix_output_default = _parse_matrix_output_default(payload.get("matrix_output"))
     events = _parse_events(payload.get("events"), zones)
+    events = _resolve_event_outputs(events, matrix_output_default)
     _validate_event_order(events)
     return HapticPlanConfig(
         plan_id=plan_id,
@@ -211,6 +247,7 @@ def haptic_plan_config_from_dict(payload: dict[str, Any]) -> HapticPlanConfig:
         zones=zones,
         timing=timing,
         haptic_defaults=haptic_defaults,
+        matrix_output_default=matrix_output_default,
     )
 
 
@@ -255,6 +292,7 @@ def _parse_event(
         "onset_policy",
         "channel_list",
         "matrix_sequence",
+        "output",
         "payload",
         "simultaneous_group",
         "onset_delay_ms",
@@ -311,6 +349,7 @@ def _parse_event(
         payload.get("matrix_sequence"),
         f"{name_prefix}.matrix_sequence",
     )
+    event_output = _parse_output(payload.get("output"), f"{name_prefix}.output")
     event_payload = _optional_mapping(payload.get("payload"), f"{name_prefix}.payload")
     simultaneous_group = _optional_str(payload.get("simultaneous_group")) or ""
     onset_delay_ms = (
@@ -368,7 +407,7 @@ def _parse_event(
     if (
         matrix_sequence
         and duration_ms is not None
-        and matrix_sequence[-1].offset_ms > duration_ms
+        and max(step.offset_ms for step in matrix_sequence) > duration_ms
     ):
         raise ValueError(f"{name_prefix}.duration_ms must cover matrix_sequence offsets.")
     if modality == "matrix" and not channel_list and event_payload is None and not matrix_sequence:
@@ -393,6 +432,7 @@ def _parse_event(
         end_command_id=end_command_id,
         channel_list=channel_list,
         matrix_sequence=matrix_sequence,
+        output=event_output,
         payload=event_payload,
         simultaneous_group=simultaneous_group,
         onset_delay_ms=onset_delay_ms,
@@ -625,16 +665,34 @@ def _matrix_sequence(value: Any, name: str) -> tuple[MatrixSequenceStep, ...]:
         raise ValueError(f"{name} must contain at most {MAX_MATRIX_SEQUENCE_STEPS} steps.")
     steps: list[MatrixSequenceStep] = []
     previous_offset: int | None = None
+    previous_mode: str = ""
     for index, item in enumerate(value):
         item_name = f"{name}[{index}]"
         if not isinstance(item, dict):
             raise ValueError(f"{item_name} must be an object.")
-        unknown = sorted(set(item) - {"offset_ms", "channel_list", "step_label"})
+        unknown = sorted(set(item) - {"offset_ms", "channel_list", "step_label", "output"})
         if unknown:
             raise ValueError(f"unknown {item_name} keys: {', '.join(unknown)}")
         offset_ms = _non_negative_int(item.get("offset_ms", 0), f"{item_name}.offset_ms")
-        if previous_offset is not None and offset_ms < previous_offset:
+        output = _parse_output(item.get("output"), f"{item_name}.output")
+        if output is not None:
+            mode = output.mode
+        elif previous_mode == "alternate":
+            mode = "alternate"  # inherits the running alternate run
+        else:
+            mode = ""
+        # A step continuing an alternate run has its offset ignored (the cycle
+        # is timed by step_ms), so it is exempt from the sortedness check.
+        is_alternate_continuation = mode == "alternate" and previous_mode == "alternate"
+        if (
+            not is_alternate_continuation
+            and previous_offset is not None
+            and offset_ms < previous_offset
+        ):
             raise ValueError(f"{item_name}.offset_ms must be >= previous offset.")
+        if not is_alternate_continuation:
+            previous_offset = offset_ms
+        previous_mode = mode
         channel_list = _channel_list(item.get("channel_list"), f"{item_name}.channel_list")
         if not channel_list:
             raise ValueError(f"{item_name}.channel_list must be non-empty.")
@@ -643,10 +701,109 @@ def _matrix_sequence(value: Any, name: str) -> tuple[MatrixSequenceStep, ...]:
                 offset_ms=offset_ms,
                 channel_list=channel_list,
                 step_label=_optional_str(item.get("step_label")) or "",
+                output=output,
             )
         )
-        previous_offset = offset_ms
     return tuple(steps)
+
+
+def _parse_output(value: Any, name: str) -> MatrixOutputPolicy | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object.")
+    unknown = sorted(set(value) - {"mode", "duration_ms", "step_ms"})
+    if unknown:
+        raise ValueError(f"unknown {name} keys: {', '.join(unknown)}")
+    mode = str(value.get("mode", "")).strip()
+    if mode not in MATRIX_OUTPUT_MODES:
+        raise ValueError(
+            f"{name}.mode must be one of: {', '.join(sorted(MATRIX_OUTPUT_MODES))}."
+        )
+    duration_ms = value.get("duration_ms")
+    step_ms = value.get("step_ms")
+    if mode == "hold":
+        if duration_ms is not None or step_ms is not None:
+            raise ValueError(f"{name} hold mode does not take duration_ms or step_ms.")
+        return MatrixOutputPolicy(mode="hold")
+    if mode == "auto_off":
+        if step_ms is not None:
+            raise ValueError(f"{name} auto_off mode does not take step_ms.")
+        if duration_ms is None:
+            raise ValueError(f"{name} auto_off mode requires duration_ms.")
+        duration_ms = _positive_int(duration_ms, f"{name}.duration_ms")
+        duration_ms_to_duration_code(duration_ms)  # validates multiple-of-50 and <= 1550
+        return MatrixOutputPolicy(mode="auto_off", duration_ms=duration_ms)
+    # alternate
+    if duration_ms is not None:
+        raise ValueError(f"{name} alternate mode does not take duration_ms.")
+    if step_ms is None:
+        raise ValueError(f"{name} alternate mode requires step_ms.")
+    step_ms = _positive_int(step_ms, f"{name}.step_ms")
+    return MatrixOutputPolicy(mode="alternate", step_ms=step_ms)
+
+
+def _parse_matrix_output_default(value: Any) -> MatrixOutputPolicy | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("matrix_output must be an object.")
+    unknown = sorted(set(value) - {"default"})
+    if unknown:
+        raise ValueError(f"unknown matrix_output keys: {', '.join(unknown)}")
+    if value.get("default") is None:
+        raise ValueError("matrix_output.default is required.")
+    return _parse_output(value.get("default"), "matrix_output.default")
+
+
+def _resolve_event_outputs(
+    events: list[HapticPlanEvent],
+    default: MatrixOutputPolicy | None,
+) -> list[HapticPlanEvent]:
+    resolved: list[HapticPlanEvent] = []
+    for event in events:
+        if event.modality != "matrix":
+            if event.output is not None:
+                raise ValueError(
+                    f"output is only valid on matrix events, not {event.name!r}."
+                )
+            resolved.append(event)
+            continue
+        effective = event.output or default
+        if event.matrix_sequence:
+            new_steps: list[MatrixSequenceStep] = []
+            running_alternate: MatrixOutputPolicy | None = None
+            for step in event.matrix_sequence:
+                if step.output is not None:
+                    step_output = step.output
+                elif running_alternate is not None:
+                    step_output = running_alternate
+                else:
+                    step_output = effective
+                if step_output is None:
+                    raise ValueError(
+                        f"matrix step in event {event.name!r} has no output policy; "
+                        "add a step/event output or matrix_output.default."
+                    )
+                if step_output.mode == "alternate":
+                    running_alternate = step_output
+                else:
+                    running_alternate = None
+                new_steps.append(replace(step, output=step_output))
+            resolved.append(replace(event, matrix_sequence=tuple(new_steps)))
+        else:
+            if effective is None:
+                raise ValueError(
+                    f"matrix event {event.name!r} has no output policy; "
+                    "add an event output or matrix_output.default."
+                )
+            if effective.mode == "alternate":
+                raise ValueError(
+                    f"matrix event {event.name!r} with a single channel_list "
+                    "cannot use alternate mode."
+                )
+            resolved.append(replace(event, output=effective))
+    return resolved
 
 
 def _range_ms(value: Any, name: str) -> tuple[int, int]:

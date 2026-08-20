@@ -2,6 +2,11 @@ plan_id: dual-6
 description: Contact first, then slip-left-right, release last.
 random_seed: 123
 
+matrix_output:
+  default:
+    mode: auto_off
+    duration_ms: 650
+
 timing:
   contact_onset_delay_ms: [1000, 2000]
   inter_event_gap_ms: [9000,13000]

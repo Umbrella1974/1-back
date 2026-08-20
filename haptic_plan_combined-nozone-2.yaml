@@ -12,6 +12,7 @@ events:
   - name: contact
     modality: matrix
     channel_list: [119,117,114,116,112,115,118,120]
+    output: {mode: hold}
     duration_ms: 1500
     onset_delay_ms: [1000, 2000]
     trigger_zone: open_zone
@@ -20,31 +21,28 @@ events:
   - name: up
     modality: matrix
     channel_list: [82, 84, 87]
+    output: {mode: hold}
     duration_ms: 1000
     trigger_zone: closed_zone
     simultaneous_group: g1
 
-  - name: right
-    modality: matrix
-    channel_list: [87, 88, 89]
-    duration_ms: 1000
-    trigger_zone: closed_zone
-    simultaneous_group: g2
-
-  - name: slip
+  - name: right-slip
     modality: matrix
     matrix_sequence:
     - offset_ms: 0
-      channel_list: [119, 117, 114]
-    - offset_ms: 100
-      channel_list: [118, 115, 112]
+      channel_list: [87, 88, 89, 119, 117, 114]
+      step_label: right
+      output: {mode: alternate, step_ms: 100}
+    - channel_list: [87, 88, 89, 118, 115, 112]
+      step_label: slip
     duration_ms: 3000
     trigger_zone: closed_zone
-    simultaneous_group: g2 
+    simultaneous_group: g2
 
   - name: release
     modality: matrix
     channel_list: [116]
+    output: {mode: auto_off, duration_ms: 650}
     trigger_zone: closed_zone
     duration_ms: 1000
 
