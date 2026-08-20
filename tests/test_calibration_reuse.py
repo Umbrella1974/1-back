@@ -11,6 +11,7 @@ from run_pinch_haptic_1back import (
     CalibrationReuseConfig,
     _calibration_reuse_config_from_dict,
     _calibration_reuse_block_reason,
+    _calibration_quick_check_detail_lines,
     _load_calibration_bundle,
     _next_calibration_version_path,
     _pinch_open_quick_check_from_samples,
@@ -117,6 +118,27 @@ def test_pinch_open_quick_check_fails_when_open_distance_shifts_past_tolerance()
 
     assert result.passed is False
     assert result.reason == "open_distance_shifted_from_reference"
+
+
+def test_calibration_quick_check_detail_lines_include_open_shift_context() -> None:
+    calibration = _low_mad_calibration()
+
+    result = _pinch_open_quick_check_from_samples(
+        [_sample(0.1099), _sample(0.1100), _sample(0.1101)],
+        calibration=calibration,
+        min_valid_frames=3,
+        open_mad_multiplier=6.0,
+        open_distance_range_ratio=0.05,
+        open_distance_min_tolerance=0.0,
+    )
+
+    details = "\n".join(_calibration_quick_check_detail_lines(result))
+
+    assert "reference=100.00 mm" in details
+    assert "current=110.00 mm" in details
+    assert "delta=10.00 mm" in details
+    assert "allowed=4.05 mm" in details
+    assert "over_by=5.94 mm" in details
 
 
 def test_calibration_reuse_config_reads_open_distance_tolerance_fields(tmp_path) -> None:

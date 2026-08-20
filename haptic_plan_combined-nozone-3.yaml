@@ -31,7 +31,7 @@ events:
         channel_list: [87, 88, 89]
         step_label: right
         output: {mode: hold}
-      - offset_ms: 100
+      - offset_ms: 200
         channel_list: [82,84,87]
         step_label: slip
         output: {mode: alternate, step_ms: 100}

@@ -137,10 +137,15 @@ class CalibrationQuickCheckResult:
     passed: bool | None = None
     reason: str = ""
     open_valid_frame_count: int = 0
+    open_reference_median: float | None = None
+    open_reference_mad: float | None = None
     open_distance_median: float | None = None
     open_distance_mad: float | None = None
     open_distance_delta: float | None = None
     open_distance_tolerance: float | None = None
+    open_distance_mad_tolerance: float | None = None
+    open_distance_range_tolerance: float | None = None
+    open_distance_min_tolerance: float | None = None
     wrist_checked: bool = False
     wrist_valid_frame_count: int = 0
     wrist_neutral_count: int = 0
@@ -152,10 +157,15 @@ class CalibrationQuickCheckResult:
             "calibration_quick_check_passed": self.passed,
             "calibration_quick_check_reason": self.reason,
             "calibration_quick_check_open_valid_frame_count": self.open_valid_frame_count,
+            "calibration_quick_check_open_reference_median": self.open_reference_median,
+            "calibration_quick_check_open_reference_mad": self.open_reference_mad,
             "calibration_quick_check_open_distance_median": self.open_distance_median,
             "calibration_quick_check_open_distance_mad": self.open_distance_mad,
             "calibration_quick_check_open_distance_delta": self.open_distance_delta,
             "calibration_quick_check_open_distance_tolerance": self.open_distance_tolerance,
+            "calibration_quick_check_open_distance_mad_tolerance": self.open_distance_mad_tolerance,
+            "calibration_quick_check_open_distance_range_tolerance": self.open_distance_range_tolerance,
+            "calibration_quick_check_open_distance_min_tolerance": self.open_distance_min_tolerance,
             "calibration_quick_check_wrist_checked": self.wrist_checked,
             "calibration_quick_check_wrist_valid_frame_count": self.wrist_valid_frame_count,
             "calibration_quick_check_wrist_neutral_count": self.wrist_neutral_count,
@@ -805,6 +815,10 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                         "[CALIBRATION] quick check failed: "
                         + calibration_quick_check.reason
                     )
+                    for line in _calibration_quick_check_detail_lines(
+                        calibration_quick_check
+                    ):
+                        print("[CALIBRATION] " + line)
                     _prompt_enter_or_abort(
                         "Press Enter to run a full calibration and save a new version..."
                     )
@@ -1353,10 +1367,11 @@ def _pinch_open_quick_check_from_samples(
     range_tolerance = float(calibration.distance_range or 0.0) * float(
         open_distance_range_ratio
     )
+    min_tolerance = float(open_distance_min_tolerance)
     tolerance = max(
         mad_tolerance,
         range_tolerance,
-        float(open_distance_min_tolerance),
+        min_tolerance,
     )
     delta = abs(float(current_median) - float(reference_median))
     reason = ""
@@ -1369,11 +1384,81 @@ def _pinch_open_quick_check_from_samples(
         passed=not reason,
         reason=reason,
         open_valid_frame_count=len(distances),
+        open_reference_median=float(reference_median),
+        open_reference_mad=(
+            float(reference_mad)
+            if reference_mad is not None and math.isfinite(float(reference_mad))
+            else None
+        ),
         open_distance_median=float(current_median),
         open_distance_mad=float(current_mad),
         open_distance_delta=float(delta),
         open_distance_tolerance=float(tolerance),
+        open_distance_mad_tolerance=float(mad_tolerance),
+        open_distance_range_tolerance=float(range_tolerance),
+        open_distance_min_tolerance=float(min_tolerance),
     )
+
+
+def _calibration_quick_check_detail_lines(
+    result: CalibrationQuickCheckResult,
+) -> list[str]:
+    lines: list[str] = []
+    if result.open_valid_frame_count:
+        lines.append(f"open valid frames: {result.open_valid_frame_count}")
+    if result.open_reference_median is not None or result.open_distance_median is not None:
+        lines.append(
+            "open median: "
+            + f"reference={_format_distance_mm(result.open_reference_median)}, "
+            + f"current={_format_distance_mm(result.open_distance_median)}"
+        )
+    if result.open_distance_delta is not None or result.open_distance_tolerance is not None:
+        delta = result.open_distance_delta
+        tolerance = result.open_distance_tolerance
+        extra = ""
+        if delta is not None and tolerance is not None:
+            extra = f", over_by={_format_distance_mm(max(0.0, delta - tolerance))}"
+        lines.append(
+            "open shift: "
+            + f"delta={_format_distance_mm(delta)}, "
+            + f"allowed={_format_distance_mm(tolerance)}"
+            + extra
+        )
+    if (
+        result.open_distance_mad is not None
+        or result.open_reference_mad is not None
+    ):
+        lines.append(
+            "open MAD: "
+            + f"reference={_format_distance_mm(result.open_reference_mad)}, "
+            + f"current={_format_distance_mm(result.open_distance_mad)}"
+        )
+    if result.open_distance_tolerance is not None:
+        lines.append(
+            "open tolerance parts: "
+            + f"MADx={_format_distance_mm(result.open_distance_mad_tolerance)}, "
+            + f"range={_format_distance_mm(result.open_distance_range_tolerance)}, "
+            + f"minimum={_format_distance_mm(result.open_distance_min_tolerance)}"
+        )
+    if result.wrist_checked:
+        lines.append(
+            "wrist neutral: "
+            + f"{result.wrist_neutral_count}/{result.wrist_valid_frame_count} "
+            + f"frames, ratio={_format_optional_float(result.wrist_neutral_ratio, digits=3)}"
+        )
+    return lines
+
+
+def _format_distance_mm(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value) * 1000.0:.2f} mm"
+
+
+def _format_optional_float(value: float | None, *, digits: int = 3) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.{digits}f}"
 
 
 def _wrist_neutral_quick_check_from_quaternions(
