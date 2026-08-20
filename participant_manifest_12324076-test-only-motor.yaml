@@ -1,0 +1,66 @@
+participant_id: 12324076
+run_id: 12324076_exp2_001
+run_seed: null
+output_root: outputs
+
+calibration:
+  path: calibrations/12324076_exp2_cal_v01.json
+  reuse: true
+  quick_check: true
+
+sessions:
+  - session_label: motor_single_plan1
+    order: 1
+    task_type: single
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-0.yaml
+    plan_id: only-motor-0
+
+  - session_label: motor_dual_plan1
+    order: 2
+    task_type: dual
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-1.yaml
+    plan_id: only-motor-1
+
+  - session_label: motor_dual_plan2
+    order: 3
+    task_type: dual
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-2.yaml
+    plan_id: only-motor-2
+
+  - session_label: motor_dual_plan3
+    order: 4
+    task_type: dual
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-3.yaml
+    plan_id: only-motor-3
+
+  - session_label: motor_dual_plan4
+    order: 5
+    task_type: dual
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-4.yaml
+    plan_id: only-motor-4
+
+  - session_label: motor_dual_plan5
+    order: 6
+    task_type: dual
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-5.yaml
+    plan_id: only-motor-5
+
+  - session_label: motor_dual_plan6
+    order: 7
+    task_type: dual
+    feedback_type: motor_only
+    config: only-motor.yaml
+    haptic_plan_config: haptic-plan-only-motor-6.yaml
+    plan_id: only-motor-6
