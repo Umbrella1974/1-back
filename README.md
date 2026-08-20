@@ -511,6 +511,8 @@ calibration_reuse:
   quick_check_enabled: true
   quick_check_duration_s: 2.0
   open_mad_multiplier: 6.0
+  open_distance_range_ratio: 0.05
+  open_distance_min_tolerance: 0.005
   wrist_neutral_min_ratio: 0.80
 ```
 
@@ -522,7 +524,7 @@ calibration_reuse:
 - 如果旧 bundle 里的 `calibration_passed=false` 或 `pinch_reference_quality_passed=false`，程序不会复用它，即使 quick check 配置关闭也会要求完整重标。
 - `summary.json` 会记录 `calibration_id`、`calibration_loaded_from_bundle`、`calibration_bundle_path`、`calibration_saved_path` 和 quick check 的距离/腕部检查字段。
 
-第一版 quick check 没有固定 Open/C/Pinch 的人为百分比阈值；open 检查使用旧 Open reference 的 MAD 倍数。`open_mad_multiplier` 和 `wrist_neutral_min_ratio` 目前是 config 参数，下一批 pilot 后再根据真实漂移分布决定是否调整。
+open distance 的 quick check 容差会取三者最大值：旧 Open reference 的 MAD 倍数、旧 calibration `distance_range` 的比例、以及绝对下限。默认 `open_distance_range_ratio=0.05`、`open_distance_min_tolerance=0.005`，代码内部距离单位与 MANUS 输入一致，通常是 meter，也就是 5 mm。这样不会把静止时亚毫米级 MAD 误当成跨次重戴手套的自然漂移容差。`wrist_neutral_min_ratio` 仍用于控制 wrist neutral quick check。
 
 命令行 prompt 中止：
 

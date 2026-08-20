@@ -118,6 +118,8 @@ class CalibrationReuseConfig:
     quick_check_enabled: bool = True
     quick_check_duration_s: float = 2.0
     open_mad_multiplier: float = 6.0
+    open_distance_range_ratio: float = 0.05
+    open_distance_min_tolerance: float = 0.005
     wrist_neutral_min_ratio: float = 0.80
 
 
@@ -1145,6 +1147,14 @@ def _calibration_reuse_config_from_dict(
             value.get("open_mad_multiplier", 6.0),
             "calibration_reuse.open_mad_multiplier",
         ),
+        open_distance_range_ratio=_ratio_config_float(
+            value.get("open_distance_range_ratio", 0.05),
+            "calibration_reuse.open_distance_range_ratio",
+        ),
+        open_distance_min_tolerance=_non_negative_config_float(
+            value.get("open_distance_min_tolerance", 0.005),
+            "calibration_reuse.open_distance_min_tolerance",
+        ),
         wrist_neutral_min_ratio=_ratio_config_float(
             value.get("wrist_neutral_min_ratio", 0.80),
             "calibration_reuse.wrist_neutral_min_ratio",
@@ -1266,6 +1276,8 @@ def _run_live_calibration_quick_check(
         calibration=calibration,
         min_valid_frames=min_valid_frames,
         open_mad_multiplier=reuse_config.open_mad_multiplier,
+        open_distance_range_ratio=reuse_config.open_distance_range_ratio,
+        open_distance_min_tolerance=reuse_config.open_distance_min_tolerance,
     )
     if not pinch_result.passed:
         return pinch_result
@@ -1311,6 +1323,8 @@ def _pinch_open_quick_check_from_samples(
     calibration: PinchCalibrationResult,
     min_valid_frames: int,
     open_mad_multiplier: float,
+    open_distance_range_ratio: float = 0.05,
+    open_distance_min_tolerance: float = 0.005,
 ) -> CalibrationQuickCheckResult:
     distances = _valid_pinch_distances(samples)
     if len(distances) < int(min_valid_frames):
@@ -1322,16 +1336,28 @@ def _pinch_open_quick_check_from_samples(
         )
     reference_median = calibration.open_distance_median
     reference_mad = calibration.open_distance_mad
-    if reference_median is None or reference_mad is None or float(reference_mad) <= 0.0:
+    if reference_median is None:
         return CalibrationQuickCheckResult(
             enabled=True,
             passed=False,
-            reason="missing_open_reference_mad",
+            reason="missing_open_reference_median",
             open_valid_frame_count=len(distances),
         )
     current_median = median(distances)
     current_mad = median([abs(value - current_median) for value in distances])
-    tolerance = float(reference_mad) * float(open_mad_multiplier)
+    mad_tolerance = (
+        float(reference_mad) * float(open_mad_multiplier)
+        if reference_mad is not None and float(reference_mad) > 0.0
+        else 0.0
+    )
+    range_tolerance = float(calibration.distance_range or 0.0) * float(
+        open_distance_range_ratio
+    )
+    tolerance = max(
+        mad_tolerance,
+        range_tolerance,
+        float(open_distance_min_tolerance),
+    )
     delta = abs(float(current_median) - float(reference_median))
     reason = ""
     if delta > tolerance:
@@ -1435,6 +1461,16 @@ def _positive_config_float(value: Any, name: str) -> float:
         raise ValueError(f"{name} must be positive.") from exc
     if not math.isfinite(result) or result <= 0.0:
         raise ValueError(f"{name} must be positive.")
+    return result
+
+
+def _non_negative_config_float(value: Any, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be non-negative.") from exc
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError(f"{name} must be non-negative.")
     return result
 
 
