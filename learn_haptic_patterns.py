@@ -542,6 +542,7 @@ def _scheduled_event_for_learning(
         end_command_id=event.end_command_id,
         channel_list=event.channel_list,
         matrix_sequence=event.matrix_sequence,
+        output=event.output,
         duration_ms=duration_ms,
         sampled_duration_ms=duration_ms,
         event_end_monotonic_ms=start_ms + duration_ms,

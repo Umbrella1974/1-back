@@ -3,9 +3,12 @@ from __future__ import annotations
 from learn_haptic_patterns import (
     _learning_log_row,
     load_learning_session,
+    play_event_once_for_test,
     sender_config_from_learning_config,
 )
 from run_pinch_haptic_dry_run import load_dualtask_config
+from simple_haptic_sender import SimpleHapticSender, SimpleHapticSenderConfig
+from vendor_exp2_abc.matrix_haptic_protocol import encode_matrix_auto_off_packet
 
 
 def test_learning_session_extracts_unique_events_from_dual_plan() -> None:
@@ -87,6 +90,29 @@ def test_learning_sender_config_matches_only_matrix_tcp_flags() -> None:
     assert config.matrix_required is True
 
 
+def test_learning_play_preserves_single_matrix_output_policy() -> None:
+    sent_payloads: list[bytes] = []
+    session = load_learning_session("only-matrix.yaml", mode_name="only-matrix")
+    event = session.events[0]
+    sender = SimpleHapticSender(
+        SimpleHapticSenderConfig(
+            matrix_enabled=True,
+            matrix_tcp_enabled=True,
+            disabled_mode=False,
+            matrix_latest_only=False,
+            matrix_socket_factory=_socket_factory(sent_payloads),
+        ),
+        session_id="learn-matrix-output",
+    )
+    try:
+        play_event_once_for_test(sender, event)
+        sender.close()
+    finally:
+        sender.close()
+
+    assert sent_payloads == [encode_matrix_auto_off_packet(event.channel_list, 650)]
+
+
 def test_learning_log_row_records_play_count_and_phase() -> None:
     session = load_learning_session("only-motor.yaml", mode_name="only-motor")
     event = session.events[0]
@@ -108,3 +134,24 @@ def test_learning_log_row_records_play_count_and_phase() -> None:
     assert row["play_index"] == 3
     assert row["event_name"] == event.name
     assert row["status"] == "played"
+
+
+class _FakeSocket:
+    def __init__(self, sent_payloads: list[bytes]) -> None:
+        self._sent_payloads = sent_payloads
+
+    def settimeout(self, timeout: float) -> None:
+        pass
+
+    def sendall(self, payload: bytes) -> None:
+        self._sent_payloads.append(bytes(payload))
+
+    def close(self) -> None:
+        pass
+
+
+def _socket_factory(sent_payloads: list[bytes]):
+    def factory(address, timeout=None):
+        return _FakeSocket(sent_payloads)
+
+    return factory
