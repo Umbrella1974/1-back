@@ -9,6 +9,7 @@ import pytest
 from pinch_calibration import PinchCalibrationConfig, calibrate_from_samples
 from run_pinch_haptic_1back import (
     CalibrationReuseConfig,
+    _calibration_reuse_config_from_dict,
     _calibration_reuse_block_reason,
     _load_calibration_bundle,
     _next_calibration_version_path,
@@ -78,24 +79,59 @@ def test_pinch_open_quick_check_passes_near_reference() -> None:
         calibration=calibration,
         min_valid_frames=3,
         open_mad_multiplier=6.0,
+        open_distance_min_tolerance=0.0,
     )
 
     assert result.passed is True
     assert result.open_distance_delta == pytest.approx(0.0)
 
 
-def test_pinch_open_quick_check_fails_when_open_distance_shifts() -> None:
-    calibration = _calibration()
+def test_pinch_open_quick_check_allows_range_based_open_distance_drift() -> None:
+    calibration = _low_mad_calibration()
 
     result = _pinch_open_quick_check_from_samples(
-        [_sample(0.089), _sample(0.090), _sample(0.091)],
+        [_sample(0.1039), _sample(0.1040), _sample(0.1041)],
         calibration=calibration,
         min_valid_frames=3,
         open_mad_multiplier=6.0,
+        open_distance_range_ratio=0.05,
+        open_distance_min_tolerance=0.0,
+    )
+
+    assert result.passed is True
+    assert result.open_distance_delta == pytest.approx(0.004)
+    assert result.open_distance_tolerance == pytest.approx(calibration.distance_range * 0.05)
+
+
+def test_pinch_open_quick_check_fails_when_open_distance_shifts_past_tolerance() -> None:
+    calibration = _low_mad_calibration()
+
+    result = _pinch_open_quick_check_from_samples(
+        [_sample(0.1099), _sample(0.1100), _sample(0.1101)],
+        calibration=calibration,
+        min_valid_frames=3,
+        open_mad_multiplier=6.0,
+        open_distance_range_ratio=0.05,
+        open_distance_min_tolerance=0.0,
     )
 
     assert result.passed is False
     assert result.reason == "open_distance_shifted_from_reference"
+
+
+def test_calibration_reuse_config_reads_open_distance_tolerance_fields(tmp_path) -> None:
+    config = _calibration_reuse_config_from_dict(
+        {
+            "enabled": True,
+            "calibration_in": "P001_exp2_cal_v01.json",
+            "open_distance_range_ratio": 0.08,
+            "open_distance_min_tolerance": 0.006,
+        },
+        config_path=tmp_path / "config.yaml",
+    )
+
+    assert config.open_distance_range_ratio == pytest.approx(0.08)
+    assert config.open_distance_min_tolerance == pytest.approx(0.006)
 
 
 def test_calibration_reuse_allows_good_reference_quality() -> None:
@@ -137,6 +173,23 @@ def _calibration():
     )
     return calibrate_from_samples(
         [_sample(0.099), _sample(0.100), _sample(0.101)],
+        [_sample(0.019), _sample(0.020), _sample(0.021)],
+        contact_samples=[_sample(0.059), _sample(0.060), _sample(0.061)],
+        config=config,
+    )
+
+
+def _low_mad_calibration():
+    config = PinchCalibrationConfig(
+        open_hand_duration_s=1.0,
+        contact_hand_duration_s=1.0,
+        pinch_hand_duration_s=1.0,
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+    )
+    return calibrate_from_samples(
+        [_sample(0.0999), _sample(0.1000), _sample(0.1001)],
         [_sample(0.019), _sample(0.020), _sample(0.021)],
         contact_samples=[_sample(0.059), _sample(0.060), _sample(0.061)],
         config=config,
