@@ -19,6 +19,7 @@ from run_pinch_haptic_1back import (
     _bool_config_value,
     _calibration_summary_fields,
     _final_summary_end_reason,
+    _paired_calibration_retry_targets,
     _prompt_enter_or_abort,
     _pygame_key_constant,
     _session_end_policy_for_task,
@@ -191,6 +192,39 @@ def test_failed_calibration_summary_blocks_formal_phase() -> None:
     assert _should_enter_formal_phase(calibration) is False
     assert summary["calibration_passed"] is False
     assert summary["calibration_failure_reason"] == "max-min too small"
+
+
+def test_paired_calibration_retry_targets_only_failed_state_pairs() -> None:
+    calibration = PinchCalibrationResult(
+        min_distance=0.02,
+        max_distance=0.10,
+        threshold_a=0.072,
+        threshold_ratio=0.65,
+        thumb_node_id=4,
+        target_finger_node_id=14,
+        open_hand_duration_s=1.0,
+        pinch_hand_duration_s=1.0,
+        open_valid_frame_count=90,
+        pinch_valid_frame_count=90,
+        paired_repetition_qc=(
+            {"repetition_index": 1, "passed": True, "failed_pairs": ()},
+            {
+                "repetition_index": 2,
+                "passed": False,
+                "failed_pairs": ("contact_pinch",),
+            },
+            {
+                "repetition_index": 3,
+                "passed": False,
+                "failed_pairs": ("open_contact", "contact_pinch"),
+            },
+        ),
+    )
+
+    assert _paired_calibration_retry_targets(calibration) == (
+        (2, ("contact", "pinch")),
+        (3, ("open", "contact", "pinch")),
+    )
 
 
 def test_no_haptic_warning_explains_open_zone_too_short(tmp_path) -> None:

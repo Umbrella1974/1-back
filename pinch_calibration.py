@@ -175,6 +175,10 @@ class PinchCalibrationResult:
     open_rep_median_range_ratio: float | None = None
     contact_rep_median_range_ratio: float | None = None
     pinch_rep_median_range_ratio: float | None = None
+    paired_repetition_qc: tuple[dict[str, Any], ...] = ()
+    pooled_reference_quality_passed: bool | None = None
+    pooled_reference_quality_reason: str = ""
+    calibration_warnings: tuple[str, ...] = ()
     full_calibration_qc_passed: bool | None = None
     full_calibration_qc_reasons: tuple[str, ...] = ()
 
@@ -283,14 +287,26 @@ def calibrate_from_repetition_distances(
         pinch_reps,
         config=cfg,
     )
+    paired_reference_reasons = list(
+        repetition_fields["paired_reference_qc_reasons"]
+    )
+    if result.open_contact_boundary is None or result.contact_pinch_boundary is None:
+        paired_reference_reasons.append("pooled_reference_boundaries_unavailable")
     reasons = list(repetition_fields["full_calibration_qc_reasons"])
+    reasons.extend(paired_reference_reasons)
     if not result.calibration_passed and result.calibration_failure_reason:
         reasons.append(result.calibration_failure_reason)
+    pooled_warnings: list[str] = []
     if result.pinch_reference_quality_passed is False and result.pinch_reference_quality_reason:
-        reasons.append(result.pinch_reference_quality_reason)
+        pooled_warnings.extend(
+            item
+            for item in result.pinch_reference_quality_reason.split(";")
+            if item
+        )
+    paired_reference_reasons = list(dict.fromkeys(paired_reference_reasons))
     return replace(
         result,
-        calibration_schema_version=2,
+        calibration_schema_version=3,
         acquisition_protocol="staged_repetition_v1",
         finger_repetition_count=len(open_reps),
         finger_repetitions=tuple(repetition_fields["finger_repetitions"]),
@@ -308,6 +324,12 @@ def calibrate_from_repetition_distances(
         open_rep_median_range_ratio=repetition_fields["open_rep_median_range_ratio"],
         contact_rep_median_range_ratio=repetition_fields["contact_rep_median_range_ratio"],
         pinch_rep_median_range_ratio=repetition_fields["pinch_rep_median_range_ratio"],
+        paired_repetition_qc=tuple(repetition_fields["paired_repetition_qc"]),
+        pooled_reference_quality_passed=result.pinch_reference_quality_passed,
+        pooled_reference_quality_reason=result.pinch_reference_quality_reason,
+        pinch_reference_quality_passed=not paired_reference_reasons,
+        pinch_reference_quality_reason=";".join(paired_reference_reasons),
+        calibration_warnings=tuple(dict.fromkeys(pooled_warnings)),
         full_calibration_qc_passed=not reasons,
         full_calibration_qc_reasons=tuple(dict.fromkeys(reasons)),
     )
@@ -548,30 +570,82 @@ def _finger_repetition_fields(
     normalized_contact = _safe_ratio(open_contact_gap, open_pinch_range)
     paired_count = min(len(open_reps), len(contact_reps), len(pinch_reps))
     contact_positions: list[float] = []
+    paired_rows: list[dict[str, Any]] = []
+    paired_reference_reasons: list[str] = []
     for index in range(paired_count):
-        open_rep_median = _distribution_summary(open_reps[index])["median"]
-        contact_rep_median = _distribution_summary(contact_reps[index])["median"]
-        pinch_rep_median = _distribution_summary(pinch_reps[index])["median"]
+        open_summary = _distribution_summary(open_reps[index])
+        contact_summary = _distribution_summary(contact_reps[index])
+        pinch_summary = _distribution_summary(pinch_reps[index])
+        open_rep_median = open_summary["median"]
+        contact_rep_median = contact_summary["median"]
+        pinch_rep_median = pinch_summary["median"]
+        rep_range = open_rep_median - pinch_rep_median
+        open_contact_rep_gap = open_rep_median - contact_rep_median
+        contact_pinch_rep_gap = contact_rep_median - pinch_rep_median
+        open_contact_rep_ratio = _safe_ratio(open_contact_rep_gap, rep_range)
+        contact_pinch_rep_ratio = _safe_ratio(contact_pinch_rep_gap, rep_range)
         position = _safe_ratio(
-            open_rep_median - contact_rep_median,
-            open_rep_median - pinch_rep_median,
+            open_contact_rep_gap,
+            rep_range,
         )
         if position is not None and math.isfinite(position):
             contact_positions.append(position)
 
+        rep_reasons: list[str] = []
+        failed_pairs: list[str] = []
+        if not open_rep_median > contact_rep_median:
+            rep_reasons.append("open_contact_order_invalid")
+            failed_pairs.append("open_contact")
+            paired_reference_reasons.append("reference_order_not_open_contact_pinch")
+        if not contact_rep_median > pinch_rep_median:
+            rep_reasons.append("contact_pinch_order_invalid")
+            failed_pairs.append("contact_pinch")
+            paired_reference_reasons.append("reference_order_not_open_contact_pinch")
+        if (
+            open_contact_rep_ratio is None
+            or open_contact_rep_ratio < config.min_state_gap_ratio
+        ):
+            rep_reasons.append("open_contact_gap_too_small")
+            failed_pairs.append("open_contact")
+            paired_reference_reasons.append("open_contact_gap_too_small")
+        if (
+            contact_pinch_rep_ratio is None
+            or contact_pinch_rep_ratio < config.min_state_gap_ratio
+        ):
+            rep_reasons.append("contact_pinch_gap_too_small")
+            failed_pairs.append("contact_pinch")
+            paired_reference_reasons.append("contact_pinch_gap_too_small")
+        if open_summary["p10"] <= contact_summary["p90"]:
+            rep_reasons.append("open_contact_distribution_overlap")
+            failed_pairs.append("open_contact")
+            paired_reference_reasons.append("paired_open_contact_distribution_overlap")
+        if contact_summary["p10"] <= pinch_summary["p90"]:
+            rep_reasons.append("contact_pinch_distribution_overlap")
+            failed_pairs.append("contact_pinch")
+            paired_reference_reasons.append("paired_contact_pinch_distribution_overlap")
+        paired_rows.append(
+            {
+                "repetition_index": index + 1,
+                "open_median": open_rep_median,
+                "contact_median": contact_rep_median,
+                "pinch_median": pinch_rep_median,
+                "open_contact_gap": open_contact_rep_gap,
+                "contact_pinch_gap": contact_pinch_rep_gap,
+                "open_contact_gap_ratio": open_contact_rep_ratio,
+                "contact_pinch_gap_ratio": contact_pinch_rep_ratio,
+                "open_contact_distribution_gap": (
+                    open_summary["p10"] - contact_summary["p90"]
+                ),
+                "contact_pinch_distribution_gap": (
+                    contact_summary["p10"] - pinch_summary["p90"]
+                ),
+                "failed_pairs": tuple(dict.fromkeys(failed_pairs)),
+                "passed": not rep_reasons,
+                "reasons": tuple(dict.fromkeys(rep_reasons)),
+            }
+        )
+
     reasons: list[str] = []
-    if not (open_median > contact_median > pinch_median):
-        reasons.append("reference_order_not_open_contact_pinch")
-    if (
-        open_contact_gap_ratio is None
-        or open_contact_gap_ratio < config.min_state_gap_ratio
-    ):
-        reasons.append("open_contact_gap_too_small")
-    if (
-        contact_pinch_gap_ratio is None
-        or contact_pinch_gap_ratio < config.min_state_gap_ratio
-    ):
-        reasons.append("contact_pinch_gap_too_small")
     if (
         normalized_contact is not None
         and config.contact_position_min is not None
@@ -620,6 +694,9 @@ def _finger_repetition_fields(
         "contact_rep_normalized_positions": tuple(contact_positions),
         "contact_rep_position_range": contact_range,
         "contact_rep_position_mad": _mad(contact_positions) if contact_positions else None,
+        "paired_repetition_qc": tuple(paired_rows),
+        "paired_reference_qc_passed": not paired_reference_reasons,
+        "paired_reference_qc_reasons": tuple(dict.fromkeys(paired_reference_reasons)),
         "full_calibration_qc_reasons": tuple(dict.fromkeys(reasons)),
         **rep_ratio_fields,
     }

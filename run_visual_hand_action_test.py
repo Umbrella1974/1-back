@@ -313,6 +313,33 @@ def run_visual_hand_action_test(config_path: str | Path) -> Path:
             display.show_result(result)
     except Exception as exc:
         errors.append(str(exc))
+        try:
+            logger.write_summary(
+                _summary_payload(
+                    session_id=session_id,
+                    config_path=config_path,
+                    seed=seed,
+                    session_config=session_config,
+                    visual_config=visual_config,
+                    calibration=calibration,
+                    calibration_bundle=calibration_bundle,
+                    reuse_config=reuse_config,
+                    saved_calibration_path=saved_calibration_path,
+                    calibration_loaded=calibration_loaded,
+                    logger=logger,
+                    sender=sender,
+                    start_wall=start_wall,
+                    end_wall=_now_iso(),
+                    warnings=warnings,
+                    errors=errors,
+                    analysis_outputs=analysis_outputs,
+                )
+            )
+            print(f"[CALIBRATION] diagnostics: {logger.paths.calibration_json}")
+            print(f"[CALIBRATION] samples: {logger.paths.calibration_timeseries_csv}")
+            print(f"[CALIBRATION] summary: {logger.paths.summary_json}")
+        except Exception as summary_exc:
+            print(f"[CALIBRATION] failed to write failure summary: {summary_exc}")
         raise
     finally:
         if display is not None:
@@ -628,6 +655,7 @@ def _summary_payload(
 ) -> dict[str, Any]:
     return {
         "session_id": session_id,
+        "run_status": "failed" if errors else "complete",
         "participant_id": session_config.get("participant_id", ""),
         "condition_id": session_config.get("condition_id", ""),
         "task_type": "visual_action_test",

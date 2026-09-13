@@ -1187,7 +1187,7 @@ def _run_live_pinch_calibration(
         pinch_hand_duration_s=calibration_config.stable_recording_duration_s,
     )
     try:
-        return calibrate_from_repetition_samples(
+        result = calibrate_from_repetition_samples(
             repetitions,
             config=stats_config,
             thumb_node_id=pinch_config.get("thumb_node_id", 4),
@@ -1215,11 +1215,109 @@ def _run_live_pinch_calibration(
             ),
             calibration_passed=False,
             calibration_failure_reason=str(exc),
-            calibration_schema_version=2,
+            calibration_schema_version=3,
             acquisition_protocol="staged_repetition_v1",
             finger_repetition_count=stats_config.repetition_count,
             full_calibration_qc_passed=False,
             full_calibration_qc_reasons=(str(exc),),
+        )
+    _print_paired_calibration_qc(result)
+    retry_targets = _paired_calibration_retry_targets(result)
+    if not retry_targets:
+        return result
+
+    print("[CALIBRATION] reacquiring failed paired states once...")
+    for repetition_index, states in retry_targets:
+        print(
+            f"[CALIBRATION] rep {repetition_index}: reacquire "
+            + ", ".join(_pinch_state_prompt_label(state) for state in states)
+        )
+        for state in states:
+            samples = _acquire_staged_pinch_state(
+                server,
+                parser,
+                logger,
+                state=state,
+                repetition_index=repetition_index,
+                session_id=session_id,
+                duration_s=calibration_config.stable_recording_duration_s,
+                save_raw_frames=save_raw,
+                tcp_log_state=tcp_log_state,
+                flush_events=flush_events,
+                calibration_config=calibration_config,
+                phase_prefix="calibration_paired_retry",
+            )
+            repetitions[state][repetition_index - 1] = samples
+    try:
+        result = calibrate_from_repetition_samples(
+            repetitions,
+            config=stats_config,
+            thumb_node_id=pinch_config.get("thumb_node_id", 4),
+            target_finger_node_id=pinch_config.get("target_finger_node_id", 14),
+        )
+    except ValueError as exc:
+        return replace(
+            result,
+            calibration_passed=False,
+            calibration_failure_reason=str(exc),
+            full_calibration_qc_passed=False,
+            full_calibration_qc_reasons=(str(exc),),
+        )
+    _print_paired_calibration_qc(result, prefix="after retry ")
+    return result
+
+
+def _paired_calibration_retry_targets(
+    calibration: PinchCalibrationResult,
+) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    targets: list[tuple[int, tuple[str, ...]]] = []
+    state_order = ("open", "contact", "pinch")
+    for row in calibration.paired_repetition_qc:
+        if bool(row.get("passed")):
+            continue
+        states: set[str] = set()
+        for pair in row.get("failed_pairs", ()):
+            if pair == "open_contact":
+                states.update(("open", "contact"))
+            elif pair == "contact_pinch":
+                states.update(("contact", "pinch"))
+        if not states:
+            continue
+        repetition_index = int(row.get("repetition_index", 0))
+        if repetition_index <= 0:
+            continue
+        targets.append(
+            (
+                repetition_index,
+                tuple(state for state in state_order if state in states),
+            )
+        )
+    return tuple(targets)
+
+
+def _print_paired_calibration_qc(
+    calibration: PinchCalibrationResult,
+    *,
+    prefix: str = "",
+) -> None:
+    for row in calibration.paired_repetition_qc:
+        status = "passed" if row.get("passed") else "failed"
+        reasons = ",".join(str(item) for item in row.get("reasons", ()))
+        print(
+            f"[CALIBRATION] {prefix}paired rep {row.get('repetition_index')}: "
+            f"{status}; open={_format_optional_float(row.get('open_median'), digits=6)}; "
+            f"contact={_format_optional_float(row.get('contact_median'), digits=6)}; "
+            f"pinch={_format_optional_float(row.get('pinch_median'), digits=6)}; "
+            "open-contact ratio="
+            f"{_format_optional_float(row.get('open_contact_gap_ratio'), digits=3)}; "
+            "contact-pinch ratio="
+            f"{_format_optional_float(row.get('contact_pinch_gap_ratio'), digits=3)}"
+            + (f"; reasons={reasons}" if reasons else "")
+        )
+    for warning in calibration.calibration_warnings:
+        print(
+            f"[CALIBRATION] {prefix}pooled-distribution warning: {warning}; "
+            "paired repetition QC determines pass/fail."
         )
 
 
@@ -2197,7 +2295,10 @@ def _acquire_staged_pinch_state(
             calibration_config=calibration_config,
         )
         if quality["passed"]:
-            print(f"[CALIBRATION] accepted {label} rep {repetition_index}.")
+            print(
+                f"[CALIBRATION] {label} rep {repetition_index} is stable; "
+                "paired cross-state QC pending."
+            )
             return samples
         print(f"[CALIBRATION] reacquire {label}: {quality['reason']}")
     return samples if "samples" in locals() else []
@@ -3255,6 +3356,10 @@ def _calibration_summary_fields(
         "normalized_contact_position": calibration.normalized_contact_position,
         "contact_rep_position_range": calibration.contact_rep_position_range,
         "contact_rep_position_mad": calibration.contact_rep_position_mad,
+        "paired_repetition_qc": list(calibration.paired_repetition_qc),
+        "pooled_reference_quality_passed": calibration.pooled_reference_quality_passed,
+        "pooled_reference_quality_reason": calibration.pooled_reference_quality_reason,
+        "calibration_warnings": list(calibration.calibration_warnings),
         "full_calibration_qc_passed": calibration.full_calibration_qc_passed,
         "full_calibration_qc_reasons": list(calibration.full_calibration_qc_reasons),
     }

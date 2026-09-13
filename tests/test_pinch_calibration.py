@@ -133,11 +133,77 @@ def test_repetition_calibration_records_normalized_contact_consistency() -> None
         config=config,
     )
 
-    assert result.calibration_schema_version == 2
+    assert result.calibration_schema_version == 3
     assert result.finger_repetition_count == 3
     assert result.normalized_contact_position == pytest.approx(0.525)
     assert result.contact_rep_position_range == pytest.approx(0.0625)
+    assert all(row["passed"] for row in result.paired_repetition_qc)
     assert result.full_calibration_qc_passed is True
+
+
+def test_paired_qc_accepts_consistent_pairs_despite_pooled_overlap() -> None:
+    config = PinchCalibrationConfig(
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+
+    result = calibrate_from_repetition_samples(
+        {
+            "open": [_constant_samples(0.14560), _constant_samples(0.13689), _constant_samples(0.13828)],
+            "contact": [_constant_samples(0.05907), _constant_samples(0.06770), _constant_samples(0.06055)],
+            "pinch": [_constant_samples(0.04844), _constant_samples(0.05721), _constant_samples(0.05115)],
+        },
+        config=config,
+    )
+
+    assert result.pooled_reference_quality_passed is False
+    assert (
+        result.pooled_reference_quality_reason
+        == "pinch_distribution_crosses_contact_pinch_boundary"
+    )
+    assert result.pinch_reference_quality_passed is True
+    assert result.calibration_warnings == (
+        "pinch_distribution_crosses_contact_pinch_boundary",
+    )
+    assert all(row["passed"] for row in result.paired_repetition_qc)
+    assert result.full_calibration_qc_passed is True
+
+
+def test_paired_qc_rejects_reversed_contact_and_pinch_repetition() -> None:
+    config = PinchCalibrationConfig(
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+
+    result = calibrate_from_repetition_samples(
+        {
+            "open": [_constant_samples(0.14)] * 3,
+            "contact": [
+                _constant_samples(0.060),
+                _constant_samples(0.045),
+                _constant_samples(0.047),
+            ],
+            "pinch": [
+                _constant_samples(0.050),
+                _constant_samples(0.050),
+                _constant_samples(0.051),
+            ],
+        },
+        config=config,
+    )
+
+    assert result.pinch_reference_quality_passed is False
+    assert result.full_calibration_qc_passed is False
+    assert result.paired_repetition_qc[0]["passed"] is True
+    assert result.paired_repetition_qc[1]["failed_pairs"] == ("contact_pinch",)
+    assert result.paired_repetition_qc[2]["failed_pairs"] == ("contact_pinch",)
+    assert "reference_order_not_open_contact_pinch" in result.full_calibration_qc_reasons
 
 
 def test_calibration_requires_min_valid_frames() -> None:
@@ -164,3 +230,7 @@ def test_calibration_fails_when_min_max_range_is_too_small() -> None:
     assert result.distance_range_ratio == pytest.approx(0.003 / 0.053)
     assert result.calibration_passed is False
     assert result.calibration_failure_reason == "max-min too small"
+
+
+def _constant_samples(distance: float) -> list[SimpleNamespace]:
+    return [_sample(distance) for _ in range(3)]
