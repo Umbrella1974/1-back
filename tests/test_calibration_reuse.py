@@ -16,10 +16,13 @@ from run_pinch_haptic_1back import (
     _calibration_reuse_config_from_dict,
     _calibration_reuse_block_reason,
     _calibration_quick_check_detail_lines,
+    _current_finger_state_validity,
     _load_calibration_bundle,
     _next_calibration_version_path,
     _pinch_open_quick_check_from_samples,
+    _quick_check_state_summary,
     _save_calibration_bundle,
+    _saved_finger_calibration_compatibility,
 )
 
 
@@ -195,6 +198,65 @@ def test_calibration_reuse_blocks_failed_calibration() -> None:
     assert reason == "loaded_calibration_failed:not_enough_valid_frames"
 
 
+def test_quick_check_small_separated_gap_is_warning_not_failure() -> None:
+    summaries = {
+        "open": _quick_check_state_summary([_sample(0.139), _sample(0.140), _sample(0.141)]),
+        "contact": _quick_check_state_summary([_sample(0.0365), _sample(0.0370), _sample(0.0375)]),
+        "pinch": _quick_check_state_summary([_sample(0.0305), _sample(0.0310), _sample(0.0315)]),
+    }
+
+    result = _current_finger_state_validity(
+        summaries,
+        min_valid_frames=3,
+        calibration_config=PinchCalibrationConfig(min_valid_frames=3),
+    )
+
+    assert result["passed"] is True
+    assert result["failed_components"] == ()
+    assert result["warnings"] == (
+        "quick_check_contact_pinch_gap_below_preferred_ratio",
+    )
+
+
+def test_quick_check_overlapping_distributions_still_fail() -> None:
+    summaries = {
+        "open": _quick_check_state_summary([_sample(0.139), _sample(0.140), _sample(0.141)]),
+        "contact": _quick_check_state_summary([_sample(0.036), _sample(0.040), _sample(0.044)]),
+        "pinch": _quick_check_state_summary([_sample(0.038), _sample(0.039), _sample(0.040)]),
+    }
+
+    result = _current_finger_state_validity(
+        summaries,
+        min_valid_frames=3,
+        calibration_config=PinchCalibrationConfig(min_valid_frames=3),
+    )
+
+    assert result["passed"] is False
+    assert "quick_check_contact_pinch_distribution_overlap" in result["reasons"]
+    assert result["failed_components"] == ("contact", "pinch")
+
+
+def test_saved_boundary_margin_is_warning_when_classification_is_correct() -> None:
+    calibration = _low_contact_pinch_gap_calibration()
+    samples = {
+        "open": [_sample(0.139), _sample(0.140), _sample(0.141)],
+        "contact": [_sample(0.0365), _sample(0.0370), _sample(0.0375)],
+        "pinch": [_sample(0.0305), _sample(0.0310), _sample(0.0315)],
+    }
+
+    result = _saved_finger_calibration_compatibility(
+        samples,
+        calibration=calibration,
+        min_ratio=0.80,
+        min_margin_ratio=0.05,
+    )
+
+    assert result["passed"] is True
+    assert result["failed_components"] == ()
+    assert "contact_saved_boundary_margin_below_preferred_ratio" in result["warnings"]
+    assert "pinch_saved_boundary_margin_below_preferred_ratio" in result["warnings"]
+
+
 def _calibration():
     config = PinchCalibrationConfig(
         open_hand_duration_s=1.0,
@@ -225,6 +287,28 @@ def _low_mad_calibration():
         [_sample(0.0999), _sample(0.1000), _sample(0.1001)],
         [_sample(0.019), _sample(0.020), _sample(0.021)],
         contact_samples=[_sample(0.059), _sample(0.060), _sample(0.061)],
+        config=config,
+    )
+
+
+def _low_contact_pinch_gap_calibration():
+    config = PinchCalibrationConfig(
+        open_hand_duration_s=1.0,
+        contact_hand_duration_s=1.0,
+        pinch_hand_duration_s=1.0,
+        stable_recording_duration_s=1.0,
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+    return calibrate_from_repetition_samples(
+        {
+            "open": [[_sample(0.139), _sample(0.140), _sample(0.141)]] * 3,
+            "contact": [[_sample(0.0365), _sample(0.0370), _sample(0.0375)]] * 3,
+            "pinch": [[_sample(0.0305), _sample(0.0310), _sample(0.0315)]] * 3,
+        },
         config=config,
     )
 

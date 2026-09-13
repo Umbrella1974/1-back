@@ -172,6 +172,89 @@ def test_paired_qc_accepts_consistent_pairs_despite_pooled_overlap() -> None:
     assert result.full_calibration_qc_passed is True
 
 
+def test_paired_qc_warns_but_accepts_small_separated_contact_pinch_gap() -> None:
+    config = PinchCalibrationConfig(
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+
+    result = calibrate_from_repetition_samples(
+        {
+            "open": [_constant_samples(0.140)] * 3,
+            "contact": [_constant_samples(0.037)] * 3,
+            "pinch": [_constant_samples(0.031)] * 3,
+        },
+        config=config,
+    )
+
+    assert result.full_calibration_qc_passed is True
+    assert result.pinch_reference_quality_passed is True
+    assert all(row["passed"] for row in result.paired_repetition_qc)
+    assert all(not row["failed_pairs"] for row in result.paired_repetition_qc)
+    assert result.paired_repetition_qc[0]["contact_pinch_gap_ratio"] == pytest.approx(
+        0.006 / 0.109
+    )
+    assert result.paired_repetition_qc[0]["warnings"] == (
+        "contact_pinch_gap_below_preferred_ratio",
+    )
+    assert "contact_pinch_gap_below_preferred_ratio" in result.calibration_warnings
+
+
+def test_paired_qc_rejects_overlapping_contact_and_pinch_distributions() -> None:
+    config = PinchCalibrationConfig(
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+    contact = [_sample(0.039), _sample(0.045), _sample(0.051)]
+    pinch = [_sample(0.038), _sample(0.040), _sample(0.042)]
+
+    result = calibrate_from_repetition_samples(
+        {
+            "open": [_constant_samples(0.140)] * 3,
+            "contact": [contact] * 3,
+            "pinch": [pinch] * 3,
+        },
+        config=config,
+    )
+
+    assert result.full_calibration_qc_passed is False
+    assert result.paired_repetition_qc[0]["failed_pairs"] == ("contact_pinch",)
+    assert "paired_contact_pinch_distribution_overlap" in result.full_calibration_qc_reasons
+
+
+def test_contact_position_variation_is_warning_not_failure() -> None:
+    config = PinchCalibrationConfig(
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+
+    result = calibrate_from_repetition_samples(
+        {
+            "open": [_constant_samples(0.140)] * 3,
+            "contact": [
+                _constant_samples(0.040),
+                _constant_samples(0.080),
+                _constant_samples(0.050),
+            ],
+            "pinch": [_constant_samples(0.020)] * 3,
+        },
+        config=config,
+    )
+
+    assert result.full_calibration_qc_passed is True
+    assert "contact_rep_position_inconsistent" in result.calibration_warnings
+    assert "contact_rep_median_inconsistent" in result.calibration_warnings
+
+
 def test_paired_qc_rejects_reversed_contact_and_pinch_repetition() -> None:
     config = PinchCalibrationConfig(
         min_valid_frames=3,

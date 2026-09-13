@@ -296,9 +296,9 @@ def calibrate_from_repetition_distances(
     reasons.extend(paired_reference_reasons)
     if not result.calibration_passed and result.calibration_failure_reason:
         reasons.append(result.calibration_failure_reason)
-    pooled_warnings: list[str] = []
+    calibration_warnings = list(repetition_fields["calibration_qc_warnings"])
     if result.pinch_reference_quality_passed is False and result.pinch_reference_quality_reason:
-        pooled_warnings.extend(
+        calibration_warnings.extend(
             item
             for item in result.pinch_reference_quality_reason.split(";")
             if item
@@ -329,7 +329,7 @@ def calibrate_from_repetition_distances(
         pooled_reference_quality_reason=result.pinch_reference_quality_reason,
         pinch_reference_quality_passed=not paired_reference_reasons,
         pinch_reference_quality_reason=";".join(paired_reference_reasons),
-        calibration_warnings=tuple(dict.fromkeys(pooled_warnings)),
+        calibration_warnings=tuple(dict.fromkeys(calibration_warnings)),
         full_calibration_qc_passed=not reasons,
         full_calibration_qc_reasons=tuple(dict.fromkeys(reasons)),
     )
@@ -572,6 +572,7 @@ def _finger_repetition_fields(
     contact_positions: list[float] = []
     paired_rows: list[dict[str, Any]] = []
     paired_reference_reasons: list[str] = []
+    paired_reference_warnings: list[str] = []
     for index in range(paired_count):
         open_summary = _distribution_summary(open_reps[index])
         contact_summary = _distribution_summary(contact_reps[index])
@@ -592,6 +593,7 @@ def _finger_repetition_fields(
             contact_positions.append(position)
 
         rep_reasons: list[str] = []
+        rep_warnings: list[str] = []
         failed_pairs: list[str] = []
         if not open_rep_median > contact_rep_median:
             rep_reasons.append("open_contact_order_invalid")
@@ -605,16 +607,14 @@ def _finger_repetition_fields(
             open_contact_rep_ratio is None
             or open_contact_rep_ratio < config.min_state_gap_ratio
         ):
-            rep_reasons.append("open_contact_gap_too_small")
-            failed_pairs.append("open_contact")
-            paired_reference_reasons.append("open_contact_gap_too_small")
+            rep_warnings.append("open_contact_gap_below_preferred_ratio")
+            paired_reference_warnings.append("open_contact_gap_below_preferred_ratio")
         if (
             contact_pinch_rep_ratio is None
             or contact_pinch_rep_ratio < config.min_state_gap_ratio
         ):
-            rep_reasons.append("contact_pinch_gap_too_small")
-            failed_pairs.append("contact_pinch")
-            paired_reference_reasons.append("contact_pinch_gap_too_small")
+            rep_warnings.append("contact_pinch_gap_below_preferred_ratio")
+            paired_reference_warnings.append("contact_pinch_gap_below_preferred_ratio")
         if open_summary["p10"] <= contact_summary["p90"]:
             rep_reasons.append("open_contact_distribution_overlap")
             failed_pairs.append("open_contact")
@@ -642,10 +642,12 @@ def _finger_repetition_fields(
                 "failed_pairs": tuple(dict.fromkeys(failed_pairs)),
                 "passed": not rep_reasons,
                 "reasons": tuple(dict.fromkeys(rep_reasons)),
+                "warnings": tuple(dict.fromkeys(rep_warnings)),
             }
         )
 
     reasons: list[str] = []
+    warnings: list[str] = list(paired_reference_warnings)
     if (
         normalized_contact is not None
         and config.contact_position_min is not None
@@ -663,7 +665,7 @@ def _finger_repetition_fields(
     if contact_range is None:
         reasons.append("contact_rep_position_unavailable")
     elif contact_range > config.max_contact_rep_position_range:
-        reasons.append("contact_rep_position_inconsistent")
+        warnings.append("contact_rep_position_inconsistent")
 
     rep_ratio_fields: dict[str, float | None] = {}
     for state in ("open", "contact", "pinch"):
@@ -671,7 +673,8 @@ def _finger_repetition_fields(
         ratio = _safe_ratio(rep_range, open_pinch_range)
         rep_ratio_fields[f"{state}_rep_median_range_ratio"] = ratio
         if ratio is None or ratio > config.max_state_rep_median_range_ratio:
-            reasons.append(f"{state}_rep_median_inconsistent")
+            target = warnings if state == "contact" else reasons
+            target.append(f"{state}_rep_median_inconsistent")
 
     for row in repetition_rows:
         mad_ratio = _safe_ratio(row["mad"], open_pinch_range)
@@ -698,6 +701,7 @@ def _finger_repetition_fields(
         "paired_reference_qc_passed": not paired_reference_reasons,
         "paired_reference_qc_reasons": tuple(dict.fromkeys(paired_reference_reasons)),
         "full_calibration_qc_reasons": tuple(dict.fromkeys(reasons)),
+        "calibration_qc_warnings": tuple(dict.fromkeys(warnings)),
         **rep_ratio_fields,
     }
 

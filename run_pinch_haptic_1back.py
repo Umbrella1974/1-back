@@ -167,6 +167,7 @@ class CalibrationQuickCheckResult:
     quick_check_reacquired_components: tuple[str, ...] = ()
     quick_check_component_status: dict[str, Any] = field(default_factory=dict)
     quick_check_failure_reasons: tuple[str, ...] = ()
+    quick_check_warnings: tuple[str, ...] = ()
     current_state_validity: dict[str, Any] = field(default_factory=dict)
     saved_calibration_compatibility: dict[str, Any] = field(default_factory=dict)
     contact_valid_frame_count: int = 0
@@ -203,6 +204,7 @@ class CalibrationQuickCheckResult:
             "calibration_quick_check_failure_reasons": list(
                 self.quick_check_failure_reasons
             ),
+            "calibration_quick_check_warnings": list(self.quick_check_warnings),
             "calibration_quick_check_current_state_validity": self.current_state_validity,
             "calibration_quick_check_saved_calibration_compatibility": self.saved_calibration_compatibility,
             "calibration_quick_check_contact_valid_frame_count": self.contact_valid_frame_count,
@@ -883,6 +885,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                     calibration_config=calibration_config,
                     flush_events=manus_queue_flush_events,
                 )
+                for warning in calibration_quick_check.quick_check_warnings:
+                    warnings.append("calibration_quick_check_warning:" + warning)
+                    print("[CALIBRATION] quick check warning: " + warning)
                 if not calibration_quick_check.passed:
                     warnings.append(
                         "calibration_quick_check_failed:"
@@ -1303,6 +1308,7 @@ def _print_paired_calibration_qc(
     for row in calibration.paired_repetition_qc:
         status = "passed" if row.get("passed") else "failed"
         reasons = ",".join(str(item) for item in row.get("reasons", ()))
+        warnings = ",".join(str(item) for item in row.get("warnings", ()))
         print(
             f"[CALIBRATION] {prefix}paired rep {row.get('repetition_index')}: "
             f"{status}; open={_format_optional_float(row.get('open_median'), digits=6)}; "
@@ -1313,6 +1319,7 @@ def _print_paired_calibration_qc(
             "contact-pinch ratio="
             f"{_format_optional_float(row.get('contact_pinch_gap_ratio'), digits=3)}"
             + (f"; reasons={reasons}" if reasons else "")
+            + (f"; warnings={warnings}" if warnings else "")
         )
     for warning in calibration.calibration_warnings:
         print(
@@ -1674,7 +1681,9 @@ def _evaluate_calibration_quick_check(
                 and state not in compatibility["failed_components"]
             ),
             "current_state_reasons": current_state["component_reasons"].get(state, ()),
+            "current_state_warnings": current_state["component_warnings"].get(state, ()),
             "saved_compatibility_reasons": compatibility["component_reasons"].get(state, ()),
+            "saved_compatibility_warnings": compatibility["component_warnings"].get(state, ()),
         }
         for state in ("open", "contact", "pinch")
     }
@@ -1714,6 +1723,9 @@ def _evaluate_calibration_quick_check(
     if wrist_result.get("reason"):
         failure_reasons.append(str(wrist_result["reason"]))
     failure_reasons = list(dict.fromkeys(reason for reason in failure_reasons if reason))
+    quick_check_warnings = list(current_state["warnings"])
+    quick_check_warnings.extend(compatibility["warnings"])
+    quick_check_warnings = list(dict.fromkeys(quick_check_warnings))
     passed = not failure_reasons
     reason = ";".join(failure_reasons)
     return CalibrationQuickCheckResult(
@@ -1744,6 +1756,7 @@ def _evaluate_calibration_quick_check(
         quick_check_reacquired_components=tuple(reacquired_components),
         quick_check_component_status=component_status,
         quick_check_failure_reasons=tuple(failure_reasons),
+        quick_check_warnings=tuple(quick_check_warnings),
         current_state_validity=current_state,
         saved_calibration_compatibility=compatibility,
     )
@@ -1770,6 +1783,21 @@ def _quick_check_state_summary(samples: Iterable[Any]) -> dict[str, Any]:
     }
 
 
+def _percentile(ordered_values: list[float], fraction: float) -> float:
+    if not ordered_values:
+        raise ValueError("ordered_values must not be empty.")
+    if len(ordered_values) == 1:
+        return ordered_values[0]
+    rank = (len(ordered_values) - 1) * fraction
+    lower_index = int(math.floor(rank))
+    upper_index = int(math.ceil(rank))
+    if lower_index == upper_index:
+        return ordered_values[lower_index]
+    lower = ordered_values[lower_index]
+    upper = ordered_values[upper_index]
+    return lower + (upper - lower) * (rank - lower_index)
+
+
 def _current_finger_state_validity(
     summaries: dict[str, dict[str, Any]],
     *,
@@ -1777,7 +1805,11 @@ def _current_finger_state_validity(
     calibration_config: PinchCalibrationConfig,
 ) -> dict[str, Any]:
     reasons: list[str] = []
+    warnings: list[str] = []
     component_reasons: dict[str, list[str]] = {state: [] for state in ("open", "contact", "pinch")}
+    component_warnings: dict[str, list[str]] = {
+        state: [] for state in ("open", "contact", "pinch")
+    }
     for state, summary in summaries.items():
         if int(summary.get("valid_count") or 0) < int(min_valid_frames):
             reason = f"{state}_not_enough_valid_quick_check_frames"
@@ -1807,12 +1839,22 @@ def _current_finger_state_validity(
             contact_pinch_gap_ratio = contact_pinch_gap / open_pinch_range
             normalized_contact = open_contact_gap_ratio
             if open_contact_gap_ratio < calibration_config.min_state_gap_ratio:
-                reason = "quick_check_open_contact_gap_too_small"
+                warning = "quick_check_open_contact_gap_below_preferred_ratio"
+                warnings.append(warning)
+                component_warnings["open"].append(warning)
+                component_warnings["contact"].append(warning)
+            if contact_pinch_gap_ratio < calibration_config.min_state_gap_ratio:
+                warning = "quick_check_contact_pinch_gap_below_preferred_ratio"
+                warnings.append(warning)
+                component_warnings["contact"].append(warning)
+                component_warnings["pinch"].append(warning)
+            if float(summaries["open"]["p10"]) <= float(summaries["contact"]["p90"]):
+                reason = "quick_check_open_contact_distribution_overlap"
                 reasons.append(reason)
                 component_reasons["open"].append(reason)
                 component_reasons["contact"].append(reason)
-            if contact_pinch_gap_ratio < calibration_config.min_state_gap_ratio:
-                reason = "quick_check_contact_pinch_gap_too_small"
+            if float(summaries["contact"]["p10"]) <= float(summaries["pinch"]["p90"]):
+                reason = "quick_check_contact_pinch_distribution_overlap"
                 reasons.append(reason)
                 component_reasons["contact"].append(reason)
                 component_reasons["pinch"].append(reason)
@@ -1840,8 +1882,10 @@ def _current_finger_state_validity(
     return {
         "passed": not reasons,
         "reasons": tuple(dict.fromkeys(reasons)),
+        "warnings": tuple(dict.fromkeys(warnings)),
         "failed_components": failed_components,
         "component_reasons": component_reasons,
+        "component_warnings": component_warnings,
         "state_summaries": summaries,
         "open_contact_gap": open_contact_gap,
         "contact_pinch_gap": contact_pinch_gap,
@@ -1871,16 +1915,24 @@ def _saved_finger_calibration_compatibility(
         return {
             "passed": False,
             "reasons": ("legacy_calibration_requires_new_full_calibration",),
+            "warnings": (),
             "failed_components": ("open", "contact", "pinch"),
             "component_reasons": {
                 state: ("legacy_calibration_requires_new_full_calibration",)
                 for state in ("open", "contact", "pinch")
             },
+            "component_warnings": {
+                state: () for state in ("open", "contact", "pinch")
+            },
         }
     ratios: dict[str, float | None] = {}
     margins: dict[str, float | None] = {}
     reasons: list[str] = []
+    warnings: list[str] = []
     component_reasons: dict[str, list[str]] = {state: [] for state in ("open", "contact", "pinch")}
+    component_warnings: dict[str, list[str]] = {
+        state: [] for state in ("open", "contact", "pinch")
+    }
     for state in ("open", "contact", "pinch"):
         distances = _valid_pinch_distances(samples_by_state.get(state, ()))
         if not distances:
@@ -1911,17 +1963,19 @@ def _saved_finger_calibration_compatibility(
             reasons.append(reason)
             component_reasons[state].append(reason)
         if margin_ratio < min_margin_ratio:
-            reason = f"{state}_saved_boundary_margin_too_small"
-            reasons.append(reason)
-            component_reasons[state].append(reason)
+            warning = f"{state}_saved_boundary_margin_below_preferred_ratio"
+            warnings.append(warning)
+            component_warnings[state].append(warning)
     failed_components = tuple(
         state for state, items in component_reasons.items() if items
     )
     return {
         "passed": not reasons,
         "reasons": tuple(dict.fromkeys(reasons)),
+        "warnings": tuple(dict.fromkeys(warnings)),
         "failed_components": failed_components,
         "component_reasons": component_reasons,
+        "component_warnings": component_warnings,
         "classification_ratios": ratios,
         "boundary_margin_ratios": margins,
         "open_contact_boundary": upper,
@@ -2088,6 +2142,8 @@ def _calibration_quick_check_detail_lines(
         lines.append(
             "failure reasons: " + ";".join(result.quick_check_failure_reasons)
         )
+    if result.quick_check_warnings:
+        lines.append("warnings: " + ";".join(result.quick_check_warnings))
     if result.quick_check_reacquired_components:
         lines.append(
             "reacquired components: " + ",".join(result.quick_check_reacquired_components)
