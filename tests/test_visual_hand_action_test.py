@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections import Counter
 from types import SimpleNamespace
 
 from run_visual_hand_action_test import (
+    _prompt_participant_id,
     _randomized_visual_trials,
+    _safe_session_component,
     _visual_action_issue_from_metric,
     _visual_action_result_pages,
     _visual_events,
@@ -22,30 +25,36 @@ def test_visual_events_are_display_only_semantics() -> None:
 
 
 def test_randomized_visual_trials_are_episode_structured_and_reproducible() -> None:
-    events = tuple(SimpleNamespace(name=name) for name in ("slip", "up", "down"))
+    middle_names = ("slip", "up", "right", "left", "down")
+    events = tuple(SimpleNamespace(name=name) for name in middle_names)
 
     first = _randomized_visual_trials(
         events,
-        episode_count=3,
-        middle_events_per_episode=(2, 4),
+        episode_count=2,
         seed=17,
     )
     second = _randomized_visual_trials(
         events,
-        episode_count=3,
-        middle_events_per_episode=(2, 4),
+        episode_count=2,
         seed=17,
     )
 
     assert [event.name for event in first] == [event.name for event in second]
-    for episode_index in range(1, 4):
+    assert Counter(event.name for event in first) == Counter(
+        {name: 2 for name in ("contact", *middle_names, "release")}
+    )
+    for episode_index in range(1, 3):
         episode = [
             event for event in first if event.visual_episode_index == episode_index
         ]
         assert episode[0].name == "contact"
         assert episode[-1].name == "release"
-        assert 2 <= len(episode[1:-1]) <= 4
-        assert all(event.name in {"slip", "up", "down"} for event in episode[1:-1])
+        assert sorted(event.name for event in episode[1:-1]) == sorted(middle_names)
+
+
+def test_participant_id_is_trimmed_and_safe_for_session_name() -> None:
+    assert _prompt_participant_id("  P001  ") == "P001"
+    assert _safe_session_component("P 001/test") == "P_001_test"
 
 
 def test_visual_result_reports_wrong_first_response() -> None:

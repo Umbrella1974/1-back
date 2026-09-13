@@ -58,9 +58,8 @@ calibration_reuse:
 
 visual_action_test:
   cue_plan_id: visual-action-1
-  episode_count: 3
+  episode_count: 2
   middle_events: [slip, up, right, left, down]
-  middle_events_per_episode: [3, 6]
   cue_duration_ms: 1000
   fixation_ms: 500
   inter_cue_interval_ms: [3000, 5000]

@@ -62,8 +62,7 @@ CUE_LABELS_ZH = {
 @dataclass(frozen=True)
 class VisualActionTestConfig:
     cue_plan_id: str = "visual-action-1"
-    episode_count: int = 3
-    middle_events_per_episode: tuple[int, int] = (3, 6)
+    episode_count: int = 2
     cue_duration_ms: int = 1000
     fixation_ms: int = 500
     inter_cue_interval_ms: tuple[int, int] = (3000, 5000)
@@ -91,12 +90,20 @@ class VisualActionResult:
     issues: tuple[VisualActionIssue, ...]
 
 
-def run_visual_hand_action_test(config_path: str | Path) -> Path:
+def run_visual_hand_action_test(
+    config_path: str | Path,
+    *,
+    participant_id: str | None = None,
+) -> Path:
     """Run the visual cue action test and return the session directory."""
 
     config_path = Path(config_path)
     config = load_dualtask_config(config_path)
-    session_config = _object_section(config, "session")
+    session_config = dict(_object_section(config, "session"))
+    participant_id = _prompt_participant_id(
+        participant_id or session_config.get("participant_id")
+    )
+    session_config["participant_id"] = participant_id
     manus_config = _object_section(config, "manus")
     pinch_config = _object_section(config, "pinch")
     visual_config = _visual_action_test_config_from_dict(
@@ -116,8 +123,11 @@ def run_visual_hand_action_test(config_path: str | Path) -> Path:
         if visual_config.random_seed is not None
         else int(session_config.get("run_seed", session_config.get("random_seed", 12345)))
     )
+    session_prefix = session_config.get(
+        "session_id_prefix", "visual_hand_action_test"
+    )
     session_id = make_session_id(
-        session_config.get("session_id_prefix", "visual_hand_action_test")
+        f"{session_prefix}_{_safe_session_component(participant_id)}"
     )
     logger = DualTaskLogger(
         session_id=session_id,
@@ -127,7 +137,6 @@ def run_visual_hand_action_test(config_path: str | Path) -> Path:
     trial_events = _randomized_visual_trials(
         cue_events,
         episode_count=visual_config.episode_count,
-        middle_events_per_episode=visual_config.middle_events_per_episode,
         seed=seed,
     )
     parser = ManusOnlyPinchInput(
@@ -363,11 +372,6 @@ def _visual_action_test_config_from_dict(
     interval = value.get("inter_cue_interval_ms", (3000, 5000))
     if not isinstance(interval, (list, tuple)) or len(interval) != 2:
         raise ValueError("visual_action_test.inter_cue_interval_ms must have two items.")
-    middle_count = value.get("middle_events_per_episode", (3, 6))
-    if not isinstance(middle_count, (list, tuple)) or len(middle_count) != 2:
-        raise ValueError(
-            "visual_action_test.middle_events_per_episode must have two items."
-        )
     middle_events = value.get("middle_events")
     if middle_events is None:
         legacy_events = value.get("events", DEFAULT_MIDDLE_EVENTS)
@@ -385,18 +389,8 @@ def _visual_action_test_config_from_dict(
     return VisualActionTestConfig(
         cue_plan_id=str(value.get("cue_plan_id", "visual-action-1") or "visual-action-1"),
         episode_count=_positive_int(
-            value.get("episode_count", value.get("repetitions_per_event", 3)),
+            value.get("episode_count", value.get("repetitions_per_event", 2)),
             "visual_action_test.episode_count",
-        ),
-        middle_events_per_episode=(
-            _positive_int(
-                middle_count[0],
-                "visual_action_test.middle_events_per_episode[0]",
-            ),
-            _positive_int(
-                middle_count[1],
-                "visual_action_test.middle_events_per_episode[1]",
-            ),
         ),
         cue_duration_ms=_positive_int(
             value.get("cue_duration_ms", 1000),
@@ -482,22 +476,17 @@ def _randomized_visual_trials(
     middle_events: tuple[Any, ...],
     *,
     episode_count: int,
-    middle_events_per_episode: tuple[int, int],
     seed: int,
 ) -> tuple[Any, ...]:
     if not middle_events:
         raise ValueError("visual action test needs at least one middle event.")
-    low, high = middle_events_per_episode
-    if high < low:
-        raise ValueError(
-            "visual_action_test.middle_events_per_episode lower bound must be <= upper bound."
-        )
     rng = random.Random(seed)
     trials: list[Any] = []
     for episode_index in range(1, int(episode_count) + 1):
-        middle_count = rng.randint(low, high) if high > low else low
+        randomized_middle = list(middle_events)
+        rng.shuffle(randomized_middle)
         names = ["contact"]
-        names.extend(rng.choice(middle_events).name for _ in range(middle_count))
+        names.extend(event.name for event in randomized_middle)
         names.append("release")
         for episode_position, name in enumerate(names, start=1):
             event = _display_only_event(name)
@@ -668,9 +657,7 @@ def _summary_payload(
             "cue_plan_id": visual_config.cue_plan_id,
             "episode_count": visual_config.episode_count,
             "middle_events": list(visual_config.middle_events),
-            "middle_events_per_episode": list(
-                visual_config.middle_events_per_episode
-            ),
+            "semantic_repetitions": visual_config.episode_count,
             "cue_duration_ms": visual_config.cue_duration_ms,
             "fixation_ms": visual_config.fixation_ms,
             "inter_cue_interval_ms": list(visual_config.inter_cue_interval_ms),
@@ -1022,6 +1009,22 @@ def _non_negative_int(value: Any, name: str) -> int:
     return result
 
 
+def _prompt_participant_id(value: str | None = None) -> str:
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    while True:
+        entered = input("Participant ID: ").strip()
+        if entered:
+            return entered
+        print("Participant ID cannot be empty.")
+
+
+def _safe_session_component(value: str) -> str:
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    safe = "".join(character if character in allowed else "_" for character in value)
+    return safe.strip("_") or "participant"
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
 
@@ -1033,8 +1036,9 @@ def main() -> int:
         description="Show randomized semantic cues, record MANUS hand actions, and analyze responses."
     )
     parser.add_argument("--config", default="visual_hand_action_test.yaml")
+    parser.add_argument("--participant-id", default=None)
     args = parser.parse_args()
-    run_visual_hand_action_test(args.config)
+    run_visual_hand_action_test(args.config, participant_id=args.participant_id)
     return 0
 
 
