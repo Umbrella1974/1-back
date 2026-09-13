@@ -99,8 +99,9 @@ python run_visual_hand_action_test.py --config visual_hand_action_test.yaml
 ```yaml
 visual_action_test:
   cue_plan_id: visual-action-1
-  events: [contact, slip, up, right, left, down, release]
-  repetitions_per_event: 3
+  episode_count: 3
+  middle_events: [slip, up, right, left, down]
+  middle_events_per_episode: [3, 6]
   cue_duration_ms: 1000
   fixation_ms: 500
   inter_cue_interval_ms: [3000, 5000]
@@ -109,7 +110,9 @@ visual_action_test:
   analysis_output_root: analysis_outputs
 ```
 
-正式 cue 阶段受试者只需要按一次 Enter 开始；如果当前 config 没有可复用的 calibration，程序仍会先要求实验者完成 pinch / wrist calibration，因为离线评分需要这些参考值。
+每组固定以 `contact` 开始、以 `release` 结束，中间从 `middle_events` 有放回随机抽取，因此允许连续出现相同语义，也不要求每组各语义数量一致。`middle_events_per_episode` 控制每组中间语义数量的随机范围。程序不会等待受试者回到中立位；每个 cue 的正式分析窗口截止到下一个 cue。
+
+正式 cue 阶段受试者只需要按一次 Enter 开始；如果当前 config 没有可复用的 calibration，程序仍会先要求实验者完成 pinch / wrist calibration，因为离线评分需要这些参考值。全部 cue 结束后，程序调用与正式实验相同的分析器，并在屏幕上分页列出未判定、首次动作不一致和动作不完整的项目；按 Enter 关闭结果页。
 
 ### Cue dispatch mode
 

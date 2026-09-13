@@ -163,9 +163,7 @@ def test_unified_analysis_includes_visual_action_plan_id(tmp_path) -> None:
             _haptic("slip", 3000, 2),
             _haptic("left", 5000, 3),
             _haptic("right", 7000, 4),
-            _haptic("up", 9000, 5),
-            _haptic("down", 11000, 6),
-            _haptic("release", 13000, 7),
+            _haptic("release", 9000, 5),
         ],
     )
 
@@ -176,10 +174,10 @@ def test_unified_analysis_includes_visual_action_plan_id(tmp_path) -> None:
 
     metrics = _read_csv(metrics_path)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert len(metrics) == 7
+    assert len(metrics) == 5
     assert {row["condition"] for row in metrics} == {"visual-action"}
     assert {row["plan_id"] for row in metrics} == {"visual-action-1"}
-    assert summary["cue_count"] == 7
+    assert summary["cue_count"] == 5
 
 
 def test_recoverable_wrist_trial_uses_correct_response_rt_not_preexisting_zero(tmp_path) -> None:

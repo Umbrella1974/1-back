@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import random
 import time
 from dataclasses import dataclass
@@ -46,7 +47,7 @@ from wrist_rotation import (
 )
 
 
-DEFAULT_VISUAL_EVENTS = ("contact", "slip", "up", "right", "left", "down", "release")
+DEFAULT_MIDDLE_EVENTS = ("slip", "up", "right", "left", "down")
 CUE_LABELS_ZH = {
     "contact": "接触",
     "slip": "滑动",
@@ -61,14 +62,33 @@ CUE_LABELS_ZH = {
 @dataclass(frozen=True)
 class VisualActionTestConfig:
     cue_plan_id: str = "visual-action-1"
-    repetitions_per_event: int = 3
+    episode_count: int = 3
+    middle_events_per_episode: tuple[int, int] = (3, 6)
     cue_duration_ms: int = 1000
     fixation_ms: int = 500
     inter_cue_interval_ms: tuple[int, int] = (3000, 5000)
     random_seed: int | None = None
-    events: tuple[str, ...] = DEFAULT_VISUAL_EVENTS
+    middle_events: tuple[str, ...] = DEFAULT_MIDDLE_EVENTS
     run_analysis: bool = True
     analysis_output_root: Path = Path("analysis_outputs")
+
+
+@dataclass(frozen=True)
+class VisualActionIssue:
+    event_position: int
+    episode_index: int
+    episode_position: int
+    event_name: str
+    category: str
+    detected_response: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class VisualActionResult:
+    total_count: int
+    passed_count: int
+    issues: tuple[VisualActionIssue, ...]
 
 
 def run_visual_hand_action_test(config_path: str | Path) -> Path:
@@ -103,10 +123,11 @@ def run_visual_hand_action_test(config_path: str | Path) -> Path:
         session_id=session_id,
         output_root=session_config.get("output_root", "outputs"),
     )
-    cue_events = _visual_events(visual_config.events)
+    cue_events = _visual_events(visual_config.middle_events)
     trial_events = _randomized_visual_trials(
         cue_events,
-        repetitions_per_event=visual_config.repetitions_per_event,
+        episode_count=visual_config.episode_count,
+        middle_events_per_episode=visual_config.middle_events_per_episode,
         seed=seed,
     )
     parser = ManusOnlyPinchInput(
@@ -285,8 +306,11 @@ def run_visual_hand_action_test(config_path: str | Path) -> Path:
                     analysis_outputs=analysis_outputs,
                 )
             )
+            result = _read_visual_action_result(metrics, trial_events)
             print(f"[ANALYSIS] wrote {metrics}")
             print(f"[ANALYSIS] wrote {summary}")
+            _print_visual_action_result(result)
+            display.show_result(result)
     except Exception as exc:
         errors.append(str(exc))
         raise
@@ -312,18 +336,40 @@ def _visual_action_test_config_from_dict(
     interval = value.get("inter_cue_interval_ms", (3000, 5000))
     if not isinstance(interval, (list, tuple)) or len(interval) != 2:
         raise ValueError("visual_action_test.inter_cue_interval_ms must have two items.")
-    events = value.get("events", DEFAULT_VISUAL_EVENTS)
-    if not isinstance(events, (list, tuple)):
-        raise ValueError("visual_action_test.events must be a list.")
+    middle_count = value.get("middle_events_per_episode", (3, 6))
+    if not isinstance(middle_count, (list, tuple)) or len(middle_count) != 2:
+        raise ValueError(
+            "visual_action_test.middle_events_per_episode must have two items."
+        )
+    middle_events = value.get("middle_events")
+    if middle_events is None:
+        legacy_events = value.get("events", DEFAULT_MIDDLE_EVENTS)
+        middle_events = [
+            item
+            for item in legacy_events
+            if str(item).strip().lower() not in {"contact", "release"}
+        ]
+    if not isinstance(middle_events, (list, tuple)):
+        raise ValueError("visual_action_test.middle_events must be a list.")
     analysis_root = Path(value.get("analysis_output_root", "analysis_outputs"))
     if not analysis_root.is_absolute():
         analysis_root = base_dir / analysis_root
     seed_value = value.get("random_seed")
     return VisualActionTestConfig(
         cue_plan_id=str(value.get("cue_plan_id", "visual-action-1") or "visual-action-1"),
-        repetitions_per_event=_positive_int(
-            value.get("repetitions_per_event", 3),
-            "visual_action_test.repetitions_per_event",
+        episode_count=_positive_int(
+            value.get("episode_count", value.get("repetitions_per_event", 3)),
+            "visual_action_test.episode_count",
+        ),
+        middle_events_per_episode=(
+            _positive_int(
+                middle_count[0],
+                "visual_action_test.middle_events_per_episode[0]",
+            ),
+            _positive_int(
+                middle_count[1],
+                "visual_action_test.middle_events_per_episode[1]",
+            ),
         ),
         cue_duration_ms=_positive_int(
             value.get("cue_duration_ms", 1000),
@@ -338,7 +384,11 @@ def _visual_action_test_config_from_dict(
             _non_negative_int(interval[1], "visual_action_test.inter_cue_interval_ms[1]"),
         ),
         random_seed=int(seed_value) if seed_value not in (None, "") else None,
-        events=tuple(str(item).strip().lower() for item in events if str(item).strip()),
+        middle_events=tuple(
+            str(item).strip().lower()
+            for item in middle_events
+            if str(item).strip()
+        ),
         run_analysis=bool(value.get("run_analysis", True)),
         analysis_output_root=analysis_root,
     )
@@ -377,6 +427,8 @@ def _visual_events(requested_names: Iterable[str]) -> tuple[Any, ...]:
         key = str(name).strip().lower()
         if not key:
             continue
+        if key not in DEFAULT_MIDDLE_EVENTS:
+            raise ValueError(f"unsupported middle visual event: {key}")
         result.append(_display_only_event(key))
     if not result:
         raise ValueError("visual action test needs at least one event.")
@@ -400,17 +452,31 @@ def _display_only_event(name: str) -> Any:
 
 
 def _randomized_visual_trials(
-    events: tuple[Any, ...],
+    middle_events: tuple[Any, ...],
     *,
-    repetitions_per_event: int,
+    episode_count: int,
+    middle_events_per_episode: tuple[int, int],
     seed: int,
 ) -> tuple[Any, ...]:
+    if not middle_events:
+        raise ValueError("visual action test needs at least one middle event.")
+    low, high = middle_events_per_episode
+    if high < low:
+        raise ValueError(
+            "visual_action_test.middle_events_per_episode lower bound must be <= upper bound."
+        )
     rng = random.Random(seed)
     trials: list[Any] = []
-    for _ in range(int(repetitions_per_event)):
-        block = list(events)
-        rng.shuffle(block)
-        trials.extend(block)
+    for episode_index in range(1, int(episode_count) + 1):
+        middle_count = rng.randint(low, high) if high > low else low
+        names = ["contact"]
+        names.extend(rng.choice(middle_events).name for _ in range(middle_count))
+        names.append("release")
+        for episode_position, name in enumerate(names, start=1):
+            event = _display_only_event(name)
+            event.visual_episode_index = episode_index
+            event.visual_episode_position = episode_position
+            trials.append(event)
     return tuple(trials)
 
 
@@ -456,7 +522,7 @@ def _run_visual_trials(
         display.draw_cue(label)
         sender.record_plan_event(
             event,
-            haptic_trial_index=index - 1,
+            haptic_trial_index=int(event.visual_episode_index) - 1,
             event_index=index - 1,
             sampled_duration_ms=visual_config.cue_duration_ms,
             event_end_monotonic_ms=cue_onset_ms + visual_config.cue_duration_ms,
@@ -572,8 +638,11 @@ def _summary_payload(
         "visual_cue_random_seed": seed,
         "visual_action_test": {
             "cue_plan_id": visual_config.cue_plan_id,
-            "events": list(visual_config.events),
-            "repetitions_per_event": visual_config.repetitions_per_event,
+            "episode_count": visual_config.episode_count,
+            "middle_events": list(visual_config.middle_events),
+            "middle_events_per_episode": list(
+                visual_config.middle_events_per_episode
+            ),
             "cue_duration_ms": visual_config.cue_duration_ms,
             "fixation_ms": visual_config.fixation_ms,
             "inter_cue_interval_ms": list(visual_config.inter_cue_interval_ms),
@@ -604,6 +673,181 @@ def _summary_payload(
     }
 
 
+def _read_visual_action_result(
+    metrics_path: Path,
+    trial_events: tuple[Any, ...],
+) -> VisualActionResult:
+    with Path(metrics_path).open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+
+    issues: list[VisualActionIssue] = []
+    for row_index, row in enumerate(rows, start=1):
+        event_position = _int_or_default(row.get("event_position"), row_index)
+        trial = (
+            trial_events[event_position - 1]
+            if 1 <= event_position <= len(trial_events)
+            else None
+        )
+        episode_index = int(getattr(trial, "visual_episode_index", 0))
+        episode_position = int(getattr(trial, "visual_episode_position", 0))
+        issue = _visual_action_issue_from_metric(
+            row,
+            event_position=event_position,
+            episode_index=episode_index,
+            episode_position=episode_position,
+        )
+        if issue is not None:
+            issues.append(issue)
+
+    return VisualActionResult(
+        total_count=len(rows),
+        passed_count=len(rows) - len(issues),
+        issues=tuple(issues),
+    )
+
+
+def _visual_action_issue_from_metric(
+    row: dict[str, str],
+    *,
+    event_position: int,
+    episode_index: int,
+    episode_position: int,
+) -> VisualActionIssue | None:
+    event_name = str(row.get("event_name", "")).strip().lower()
+    first_response = str(row.get("first_response", "")).strip().lower()
+    first_correct = _csv_bool(row.get("first_response_correct"))
+    eventual_correct = _csv_bool(row.get("eventual_correct"))
+    trial_quality = str(row.get("trial_quality", "")).strip().lower()
+    response_reason = str(row.get("response_quality_reason", "")).strip()
+    cycle_quality = str(row.get("cycle_quality", "")).strip().lower()
+    cycle_reason = str(row.get("cycle_quality_reason", "")).strip()
+    quality_reason = str(row.get("quality_reason", "")).strip()
+
+    category = ""
+    reason = quality_reason or response_reason or cycle_reason
+    if trial_quality.startswith("insufficient"):
+        category = "数据不足"
+    elif response_reason == "pre_existing_correct_action_at_cue":
+        category = "未检测到新动作"
+    elif first_correct is False:
+        category = "首次动作不一致"
+    elif eventual_correct is not True:
+        category = "未判定" if not first_response else "动作不完整"
+    elif cycle_quality.startswith("incomplete"):
+        category = "动作不完整"
+        reason = cycle_reason or reason
+
+    if not category:
+        return None
+    return VisualActionIssue(
+        event_position=event_position,
+        episode_index=episode_index,
+        episode_position=episode_position,
+        event_name=event_name,
+        category=category,
+        detected_response=first_response,
+        reason=_result_reason_zh(reason),
+    )
+
+
+def _visual_action_result_pages(
+    result: VisualActionResult,
+    *,
+    issues_per_page: int = 8,
+) -> tuple[tuple[str, ...], ...]:
+    header = (
+        "动作判定完成",
+        f"总计 {result.total_count} 项  通过 {result.passed_count} 项  需检查 {len(result.issues)} 项",
+        "",
+    )
+    if not result.issues:
+        return (header + ("所有动作均与语义一致", "", "按 Enter 结束"),)
+
+    issue_lines = [_visual_action_issue_line(issue) for issue in result.issues]
+    chunks = [
+        issue_lines[index : index + issues_per_page]
+        for index in range(0, len(issue_lines), issues_per_page)
+    ]
+    pages: list[tuple[str, ...]] = []
+    for page_index, chunk in enumerate(chunks, start=1):
+        footer = (
+            "",
+            f"第 {page_index}/{len(chunks)} 页  左右键或空格翻页  Enter 结束",
+        )
+        pages.append(header + tuple(chunk) + footer)
+    return tuple(pages)
+
+
+def _visual_action_issue_line(issue: VisualActionIssue) -> str:
+    location = (
+        f"第{issue.episode_index}组第{issue.episode_position}项"
+        if issue.episode_index and issue.episode_position
+        else f"第{issue.event_position}项"
+    )
+    expected = CUE_LABELS_ZH.get(issue.event_name, issue.event_name)
+    detected = _response_label_zh(issue.detected_response)
+    detail = f"，检测到{detected}" if detected else ""
+    reason = f"（{issue.reason}）" if issue.reason else ""
+    return f"{location} {expected}：{issue.category}{detail}{reason}"
+
+
+def _print_visual_action_result(result: VisualActionResult) -> None:
+    print(
+        "[RESULT] "
+        f"total={result.total_count} passed={result.passed_count} issues={len(result.issues)}"
+    )
+    for issue in result.issues:
+        print("[RESULT] " + _visual_action_issue_line(issue))
+
+
+def _response_label_zh(value: str) -> str:
+    labels = {
+        **CUE_LABELS_ZH,
+        "closing": "闭合",
+        "opening": "张开",
+        "pinch": "捏合",
+        "neutral": "中立",
+    }
+    return labels.get(str(value).strip().lower(), str(value).strip())
+
+
+def _result_reason_zh(value: str) -> str:
+    reasons = {
+        "missing_onset_or_wrist_timeseries": "缺少手腕数据",
+        "missing_onset_or_pinch_timeseries": "缺少捏合数据",
+        "too_few_baseline_samples": "提示前数据不足",
+        "too_few_response_samples": "响应期数据不足",
+        "pre_existing_correct_action_at_cue": "提示出现时已经处于该方向",
+        "no_stable_wrist_action_before_next_cue": "下一提示前没有稳定方向动作",
+        "no_correct_wrist_action_before_next_cue": "下一提示前没有正确方向动作",
+        "neutral_return_not_detected_before_next_cue": "下一提示前没有检测到回位",
+        "no_correct_pinch_direction_before_next_cue": "下一提示前没有正确捏合变化",
+        "no_stable_closure_increase_before_next_cue": "没有检测到稳定捏合",
+        "no_stable_reopening_before_next_cue": "没有检测到松回",
+        "no_stable_contact_reference_return_before_next_cue": "没有回到接触状态",
+        "no_stable_target_state_before_next_cue": "没有进入目标状态",
+        "baseline_closure_too_high_to_detect_extra_pinch": "提示前已捏合过紧",
+        "contact_reference_not_available": "接触参考不可用",
+    }
+    return reasons.get(str(value).strip(), str(value).strip())
+
+
+def _csv_bool(value: Any) -> bool | None:
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return None
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return int(default)
+
+
 class _VisualCueDisplay:
     def __init__(self) -> None:
         import config as nback_defaults
@@ -627,6 +871,7 @@ class _VisualCueDisplay:
             nback_defaults.FONT_SIZE_INSTRUCTION,
             is_chinese=True,
         )
+        self.font_result = _load_font_safe(pygame, 26, is_chinese=True)
 
     def show_text_and_wait(self, text: str, *, wait_key_name: str) -> None:
         self._draw_centered_lines(text, self.font_instruction)
@@ -652,6 +897,24 @@ class _VisualCueDisplay:
     def draw_blank(self) -> None:
         self.screen.fill(self.config.BACKGROUND_COLOR)
         self.pygame.display.flip()
+
+    def show_result(self, result: VisualActionResult) -> None:
+        pages = _visual_action_result_pages(result)
+        page_index = 0
+        while True:
+            self._draw_centered_lines("\n".join(pages[page_index]), self.font_result)
+            for event in self.pygame.event.get():
+                if event.type == self.pygame.QUIT:
+                    return
+                if event.type != self.pygame.KEYDOWN:
+                    continue
+                if event.key in {self.pygame.K_ESCAPE, self.pygame.K_RETURN}:
+                    return
+                if event.key in {self.pygame.K_RIGHT, self.pygame.K_SPACE}:
+                    page_index = min(len(pages) - 1, page_index + 1)
+                elif event.key == self.pygame.K_LEFT:
+                    page_index = max(0, page_index - 1)
+            self.clock.tick(60)
 
     def pump_events(self) -> None:
         for event in self.pygame.event.get():
