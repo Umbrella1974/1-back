@@ -143,6 +143,7 @@ class SimpleHapticSenderConfig:
     matrix_send_timeout_s: float = 0.2
     max_queue_size: int = 128
     matrix_latest_only: bool = True
+    console_logging_enabled: bool = True
     vibration_socket_factory: Any = socket.create_connection
     matrix_socket_factory: Any = socket.create_connection
 
@@ -158,6 +159,7 @@ class SimpleHapticSenderConfig:
             "matrix_tcp_enabled",
             "matrix_required",
             "matrix_latest_only",
+            "console_logging_enabled",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be true or false.")
@@ -490,12 +492,13 @@ class SimpleHapticSender:
                 command.source_record.end_command_sent = True
                 command.source_record.end_command_tcp_success = record.tcp_success
                 command.source_record.actual_duration_ms = record.actual_duration_ms
-            print(
-                "[HAPTIC] "
-                f"end_command source={command.source_event_name} "
-                f"command_id={command.command_id} "
-                f"tcp={'queued' if record.tcp_queued else record.send_status}"
-            )
+            if self.config.console_logging_enabled:
+                print(
+                    "[HAPTIC] "
+                    f"end_command source={command.source_event_name} "
+                    f"command_id={command.command_id} "
+                    f"tcp={'queued' if record.tcp_queued else record.send_status}"
+                )
             records.append(record)
         return records
 
@@ -554,7 +557,8 @@ class SimpleHapticSender:
             queued = self._matrix_worker.submit_sequence(tuple(frames))
             for record in records:
                 record.tcp_queued = bool(queued)
-                print(_haptic_console_line(record))
+                if self.config.console_logging_enabled:
+                    print(_haptic_console_line(record))
         return records[0]
 
     def write_csv(self, path: str | Path) -> Path:
@@ -804,30 +808,35 @@ class SimpleHapticSender:
         )
         if tcp_enabled and submit_tcp:
             self._submit_tcp(record, modality=modality)
-            print(
-                _haptic_console_line(record)
-            )
+            if self.config.console_logging_enabled:
+                print(
+                    _haptic_console_line(record)
+                )
         self.records.append(record)
         return record
 
     def _start_tcp_workers(self) -> None:
         if self.config.disabled_mode:
-            print("[HAPTIC TCP] disabled_mode=true; no TCP workers started.")
+            if self.config.console_logging_enabled:
+                print("[HAPTIC TCP] disabled_mode=true; no TCP workers started.")
             return
         if self.config.vibration_enabled and self.config.vibration_tcp_enabled:
             self._vibration_worker = self._start_vibration_worker()
         elif self.config.vibration_enabled:
-            print("[HAPTIC TCP] vibration enabled; vibration TCP disabled.")
+            if self.config.console_logging_enabled:
+                print("[HAPTIC TCP] vibration enabled; vibration TCP disabled.")
         if self.config.matrix_enabled and self.config.matrix_tcp_enabled:
             self._matrix_worker = self._start_matrix_worker()
         elif self.config.matrix_enabled:
-            print("[HAPTIC TCP] matrix enabled; matrix TCP disabled.")
+            if self.config.console_logging_enabled:
+                print("[HAPTIC TCP] matrix enabled; matrix TCP disabled.")
 
     def _start_vibration_worker(self) -> VibrationTcpLineWorker | None:
-        print(
-            "[HAPTIC TCP] connecting vibration "
-            f"{self.config.vibration_host}:{self.config.vibration_port}..."
-        )
+        if self.config.console_logging_enabled:
+            print(
+                "[HAPTIC TCP] connecting vibration "
+                f"{self.config.vibration_host}:{self.config.vibration_port}..."
+            )
         worker = VibrationTcpLineWorker(
             host=self.config.vibration_host,
             port=self.config.vibration_port,
@@ -842,23 +851,26 @@ class SimpleHapticSender:
         )
         try:
             worker.start()
-            print(
-                "[HAPTIC TCP] vibration connected "
-                f"{self.config.vibration_host}:{self.config.vibration_port}"
-            )
+            if self.config.console_logging_enabled:
+                print(
+                    "[HAPTIC TCP] vibration connected "
+                    f"{self.config.vibration_host}:{self.config.vibration_port}"
+                )
             return worker
         except VibrationHapticConnectionError as exc:
             if self.config.vibration_required:
                 raise
             self._connect_warnings.append(str(exc))
-            print(f"[TCP HAPTIC WARNING] {exc}")
+            if self.config.console_logging_enabled:
+                print(f"[TCP HAPTIC WARNING] {exc}")
             return None
 
     def _start_matrix_worker(self) -> MatrixTcpWorker | None:
-        print(
-            "[HAPTIC TCP] connecting matrix "
-            f"{self.config.matrix_host}:{self.config.matrix_port}..."
-        )
+        if self.config.console_logging_enabled:
+            print(
+                "[HAPTIC TCP] connecting matrix "
+                f"{self.config.matrix_host}:{self.config.matrix_port}..."
+            )
         worker = MatrixTcpWorker(
             host=self.config.matrix_host,
             port=self.config.matrix_port,
@@ -870,16 +882,18 @@ class SimpleHapticSender:
         )
         try:
             worker.start()
-            print(
-                "[HAPTIC TCP] matrix connected "
-                f"{self.config.matrix_host}:{self.config.matrix_port}"
-            )
+            if self.config.console_logging_enabled:
+                print(
+                    "[HAPTIC TCP] matrix connected "
+                    f"{self.config.matrix_host}:{self.config.matrix_port}"
+                )
             return worker
         except MatrixHapticConnectionError as exc:
             if self.config.matrix_required:
                 raise
             self._connect_warnings.append(str(exc))
-            print(f"[TCP HAPTIC WARNING] {exc}")
+            if self.config.console_logging_enabled:
+                print(f"[TCP HAPTIC WARNING] {exc}")
             return None
 
     def _submit_tcp(self, record: HapticEventRecord, *, modality: str) -> None:
@@ -977,7 +991,8 @@ class SimpleHapticSender:
         )
         queued = self._matrix_worker.submit(record, encode_matrix_off_packet())
         record.tcp_queued = bool(queued)
-        print(_haptic_console_line(record))
+        if self.config.console_logging_enabled:
+            print(_haptic_console_line(record))
 
 
 def _validate_channel_list(channels: list[int] | tuple[int, ...]) -> list[int]:

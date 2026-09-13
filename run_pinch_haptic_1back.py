@@ -36,6 +36,7 @@ from nback_dualtask_runner import (
 from pinch_calibration import (
     PinchCalibrationConfig,
     PinchCalibrationResult,
+    calibrate_from_repetition_samples,
     calibrate_from_samples,
     classify_pinch_zone,
 )
@@ -62,6 +63,10 @@ from wrist_rotation import (
     classify_wrist_rotation,
     classify_wrist_rotation_frame,
     extract_wrist_quaternion,
+    mean_quaternion,
+    neutral_centered_wrist_quick_check,
+    quaternion_angle,
+    relative_quaternion,
     wrist_rotation_config_from_dict,
 )
 
@@ -74,8 +79,9 @@ CUE_DISPATCH_ZONE_SEQUENTIAL = "zone_sequential"
 CUE_DISPATCH_TIMED_GROUPED = "timed_grouped"
 CUE_DISPATCH_MODES = {CUE_DISPATCH_ZONE_SEQUENTIAL, CUE_DISPATCH_TIMED_GROUPED}
 CALIBRATION_FAILURE_MESSAGE = (
-    "Calibration failed: max-min too small.\n"
-    "Check target_finger_node_id, hand gesture, and whether you are opening/pinching the configured fingers."
+    "Calibration failed.\n"
+    "Check the saved calibration summary/log for the exact reason, then confirm hand posture, "
+    "finger node IDs, and wrist poses before retrying."
 )
 
 
@@ -121,6 +127,12 @@ class CalibrationReuseConfig:
     open_distance_range_ratio: float = 0.05
     open_distance_min_tolerance: float = 0.005
     wrist_neutral_min_ratio: float = 0.80
+    quick_check_max_attempts: int = 2
+    saved_classification_min_ratio: float = 0.80
+    saved_boundary_margin_min_ratio: float = 0.05
+    wrist_neutral_noise_multiplier: float = 6.0
+    wrist_neutral_action_range_ratio: float = 0.10
+    wrist_neutral_absolute_floor: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -150,6 +162,18 @@ class CalibrationQuickCheckResult:
     wrist_valid_frame_count: int = 0
     wrist_neutral_count: int = 0
     wrist_neutral_ratio: float | None = None
+    quick_check_attempt_count: int = 0
+    quick_check_retry_used: bool = False
+    quick_check_reacquired_components: tuple[str, ...] = ()
+    quick_check_component_status: dict[str, Any] = field(default_factory=dict)
+    quick_check_failure_reasons: tuple[str, ...] = ()
+    current_state_validity: dict[str, Any] = field(default_factory=dict)
+    saved_calibration_compatibility: dict[str, Any] = field(default_factory=dict)
+    contact_valid_frame_count: int = 0
+    pinch_valid_frame_count: int = 0
+    contact_distance_median: float | None = None
+    pinch_distance_median: float | None = None
+    normalized_contact_position: float | None = None
 
     def to_summary_fields(self) -> dict[str, Any]:
         return {
@@ -170,6 +194,22 @@ class CalibrationQuickCheckResult:
             "calibration_quick_check_wrist_valid_frame_count": self.wrist_valid_frame_count,
             "calibration_quick_check_wrist_neutral_count": self.wrist_neutral_count,
             "calibration_quick_check_wrist_neutral_ratio": self.wrist_neutral_ratio,
+            "calibration_quick_check_attempt_count": self.quick_check_attempt_count,
+            "calibration_quick_check_retry_used": self.quick_check_retry_used,
+            "calibration_quick_check_reacquired_components": list(
+                self.quick_check_reacquired_components
+            ),
+            "calibration_quick_check_component_status": self.quick_check_component_status,
+            "calibration_quick_check_failure_reasons": list(
+                self.quick_check_failure_reasons
+            ),
+            "calibration_quick_check_current_state_validity": self.current_state_validity,
+            "calibration_quick_check_saved_calibration_compatibility": self.saved_calibration_compatibility,
+            "calibration_quick_check_contact_valid_frame_count": self.contact_valid_frame_count,
+            "calibration_quick_check_pinch_valid_frame_count": self.pinch_valid_frame_count,
+            "calibration_quick_check_contact_distance_median": self.contact_distance_median,
+            "calibration_quick_check_pinch_distance_median": self.pinch_distance_median,
+            "calibration_quick_check_normalized_contact_position": self.normalized_contact_position,
         }
 
 
@@ -650,6 +690,42 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
             "min_distance_range_ratio",
             0.15,
         ),
+        repetition_count=calibration_config_payload.get("repetition_count", 3),
+        stability_window_s=calibration_config_payload.get("stability_window_s", 0.5),
+        stability_dwell_s=calibration_config_payload.get("stability_dwell_s", 0.4),
+        stable_recording_duration_s=calibration_config_payload.get(
+            "stable_recording_duration_s",
+            1.5,
+        ),
+        quick_check_recording_duration_s=calibration_config_payload.get(
+            "quick_check_recording_duration_s",
+            0.75,
+        ),
+        stability_valid_ratio_min=calibration_config_payload.get(
+            "stability_valid_ratio_min",
+            0.8,
+        ),
+        stability_mad_max=calibration_config_payload.get("stability_mad_max", 0.004),
+        stability_range_max=calibration_config_payload.get(
+            "stability_range_max",
+            0.015,
+        ),
+        stability_timeout_s=calibration_config_payload.get("stability_timeout_s", 8.0),
+        max_acquisition_attempts=calibration_config_payload.get(
+            "max_acquisition_attempts",
+            3,
+        ),
+        min_state_gap_ratio=calibration_config_payload.get("min_state_gap_ratio", 0.10),
+        max_contact_rep_position_range=calibration_config_payload.get(
+            "max_contact_rep_position_range",
+            0.25,
+        ),
+        max_state_rep_median_range_ratio=calibration_config_payload.get(
+            "max_state_rep_median_range_ratio",
+            0.20,
+        ),
+        contact_position_min=calibration_config_payload.get("contact_position_min"),
+        contact_position_max=calibration_config_payload.get("contact_position_max"),
     )
     vibration_tcp_config = config.get("vibration_tcp") or {}
     matrix_tcp_config = config.get("matrix_tcp") or {}
@@ -804,6 +880,7 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
                     save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
                     tcp_log_state=manus_tcp_log_state,
                     min_valid_frames=calibration_config.min_valid_frames,
+                    calibration_config=calibration_config,
                     flush_events=manus_queue_flush_events,
                 )
                 if not calibration_quick_check.passed:
@@ -850,7 +927,9 @@ def run_live_pinch_haptic_1back(config_path: str | Path) -> Path:
         logger.write_calibration(calibration)
         print(f"Calibration threshold_a={calibration.threshold_a:.6f}")
         if not _should_enter_formal_phase(calibration):
-            warnings.append(f"calibration_failed: {calibration.calibration_failure_reason}")
+            failure_reason = _live_calibration_failure_reason(calibration)
+            warnings.append(f"calibration_failed:{failure_reason}")
+            print(f"[CALIBRATION] failure reason: {failure_reason}")
             print(CALIBRATION_FAILURE_MESSAGE)
             display = _NBackPygameDisplay()
             display.show_text_and_wait(
@@ -1078,54 +1157,70 @@ def _run_live_pinch_calibration(
     tcp_log_state: ManusTcpLogState | None,
     flush_events: list[dict[str, Any]] | None = None,
 ) -> PinchCalibrationResult:
-    _prompt_enter_or_abort("Open hand calibration: press Enter, then keep hand open...")
-    open_samples = _collect_live_calibration_samples(
-        server,
-        parser,
-        logger,
-        session_id=session_id,
-        duration_s=calibration_config.open_hand_duration_s,
-        save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
-        tcp_log_state=tcp_log_state,
-        phase="open",
-        flush_events=flush_events,
+    repetitions: dict[str, list[list[PinchInputSample]]] = {
+        "open": [],
+        "contact": [],
+        "pinch": [],
+    }
+    save_raw = bool(manus_config.get("save_raw_frames", True))
+    for repetition_index in range(1, calibration_config.repetition_count + 1):
+        for state in ("open", "contact", "pinch"):
+            samples = _acquire_staged_pinch_state(
+                server,
+                parser,
+                logger,
+                state=state,
+                repetition_index=repetition_index,
+                session_id=session_id,
+                duration_s=calibration_config.stable_recording_duration_s,
+                save_raw_frames=save_raw,
+                tcp_log_state=tcp_log_state,
+                flush_events=flush_events,
+                calibration_config=calibration_config,
+                phase_prefix="calibration",
+            )
+            repetitions[state].append(samples)
+    stats_config = replace(
+        calibration_config,
+        open_hand_duration_s=calibration_config.stable_recording_duration_s,
+        contact_hand_duration_s=calibration_config.stable_recording_duration_s,
+        pinch_hand_duration_s=calibration_config.stable_recording_duration_s,
     )
-    _prompt_enter_or_abort(
-        "C-shape calibration: press Enter, then keep the task-ready C-shape posture..."
-    )
-    contact_samples = _collect_live_calibration_samples(
-        server,
-        parser,
-        logger,
-        session_id=session_id,
-        duration_s=calibration_config.contact_hand_duration_s,
-        save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
-        tcp_log_state=tcp_log_state,
-        phase="contact",
-        flush_events=flush_events,
-    )
-    _prompt_enter_or_abort(
-        "Pinch calibration: press Enter, then pinch thumb and target finger..."
-    )
-    pinch_samples = _collect_live_calibration_samples(
-        server,
-        parser,
-        logger,
-        session_id=session_id,
-        duration_s=calibration_config.pinch_hand_duration_s,
-        save_raw_frames=bool(manus_config.get("save_raw_frames", True)),
-        tcp_log_state=tcp_log_state,
-        phase="pinch",
-        flush_events=flush_events,
-    )
-    return calibrate_from_samples(
-        open_samples,
-        pinch_samples,
-        contact_samples=contact_samples,
-        config=calibration_config,
-        thumb_node_id=pinch_config.get("thumb_node_id", 4),
-        target_finger_node_id=pinch_config.get("target_finger_node_id", 14),
-    )
+    try:
+        return calibrate_from_repetition_samples(
+            repetitions,
+            config=stats_config,
+            thumb_node_id=pinch_config.get("thumb_node_id", 4),
+            target_finger_node_id=pinch_config.get("target_finger_node_id", 14),
+        )
+    except ValueError as exc:
+        return PinchCalibrationResult(
+            min_distance=0.0,
+            max_distance=0.0,
+            threshold_a=0.0,
+            threshold_ratio=stats_config.threshold_ratio,
+            thumb_node_id=int(pinch_config.get("thumb_node_id", 4)),
+            target_finger_node_id=int(pinch_config.get("target_finger_node_id", 14)),
+            open_hand_duration_s=stats_config.open_hand_duration_s,
+            contact_hand_duration_s=stats_config.contact_hand_duration_s,
+            pinch_hand_duration_s=stats_config.pinch_hand_duration_s,
+            open_valid_frame_count=sum(
+                len(_valid_pinch_distances(samples)) for samples in repetitions["open"]
+            ),
+            contact_valid_frame_count=sum(
+                len(_valid_pinch_distances(samples)) for samples in repetitions["contact"]
+            ),
+            pinch_valid_frame_count=sum(
+                len(_valid_pinch_distances(samples)) for samples in repetitions["pinch"]
+            ),
+            calibration_passed=False,
+            calibration_failure_reason=str(exc),
+            calibration_schema_version=2,
+            acquisition_protocol="staged_repetition_v1",
+            finger_repetition_count=stats_config.repetition_count,
+            full_calibration_qc_passed=False,
+            full_calibration_qc_reasons=(str(exc),),
+        )
 
 
 def _calibration_reuse_config_from_dict(
@@ -1172,6 +1267,30 @@ def _calibration_reuse_config_from_dict(
         wrist_neutral_min_ratio=_ratio_config_float(
             value.get("wrist_neutral_min_ratio", 0.80),
             "calibration_reuse.wrist_neutral_min_ratio",
+        ),
+        quick_check_max_attempts=_positive_int_value(
+            value.get("quick_check_max_attempts", 2),
+            "calibration_reuse.quick_check_max_attempts",
+        ),
+        saved_classification_min_ratio=_ratio_config_float(
+            value.get("saved_classification_min_ratio", 0.80),
+            "calibration_reuse.saved_classification_min_ratio",
+        ),
+        saved_boundary_margin_min_ratio=_ratio_config_float(
+            value.get("saved_boundary_margin_min_ratio", 0.05),
+            "calibration_reuse.saved_boundary_margin_min_ratio",
+        ),
+        wrist_neutral_noise_multiplier=_positive_config_float(
+            value.get("wrist_neutral_noise_multiplier", 6.0),
+            "calibration_reuse.wrist_neutral_noise_multiplier",
+        ),
+        wrist_neutral_action_range_ratio=_ratio_config_float(
+            value.get("wrist_neutral_action_range_ratio", 0.10),
+            "calibration_reuse.wrist_neutral_action_range_ratio",
+        ),
+        wrist_neutral_absolute_floor=_non_negative_config_float(
+            value.get("wrist_neutral_absolute_floor", 0.02),
+            "calibration_reuse.wrist_neutral_absolute_floor",
         ),
     )
 
@@ -1223,7 +1342,7 @@ def _save_calibration_bundle(
         else reuse_config.calibration_id or target.stem
     )
     payload = {
-        "format_version": 1,
+        "format_version": int(getattr(calibration, "calibration_schema_version", 1) or 1),
         "calibration_id": calibration_id,
         "created_wall_time_iso": _now_iso(),
         "pinch_calibration": calibration.to_dict(),
@@ -1269,66 +1388,475 @@ def _run_live_calibration_quick_check(
     save_raw_frames: bool,
     tcp_log_state: ManusTcpLogState | None,
     min_valid_frames: int,
+    calibration_config: PinchCalibrationConfig,
     flush_events: list[dict[str, Any]] | None = None,
 ) -> CalibrationQuickCheckResult:
-    _prompt_enter_or_abort(
-        "Calibration quick check: press Enter, then keep hand open and wrist neutral..."
-    )
-    open_samples = _collect_live_calibration_samples(
+    quick_samples: dict[str, list[Any]] = {}
+    save_raw = bool(save_raw_frames)
+    for state in ("open", "contact", "pinch"):
+        quick_samples[state] = _acquire_staged_pinch_state(
+            server,
+            parser,
+            logger,
+            state=state,
+            repetition_index=1,
+            session_id=session_id,
+            duration_s=calibration_config.quick_check_recording_duration_s,
+            save_raw_frames=save_raw,
+            tcp_log_state=tcp_log_state,
+            flush_events=flush_events,
+            calibration_config=replace(
+                calibration_config,
+                min_valid_frames=min_valid_frames,
+                repetition_count=1,
+            ),
+            phase_prefix="quick_check",
+        )
+    wrist_quaternions = _acquire_quick_check_wrist_neutral(
         server,
-        parser,
         logger,
+        wrist_calibration=wrist_calibration,
+        wrist_rotation_config=wrist_rotation_config,
+        calibration_config=calibration_config,
         session_id=session_id,
-        duration_s=reuse_config.quick_check_duration_s,
-        save_raw_frames=save_raw_frames,
+        save_raw_frames=save_raw,
         tcp_log_state=tcp_log_state,
-        phase="quick_check_open",
         flush_events=flush_events,
     )
-    pinch_result = _pinch_open_quick_check_from_samples(
-        open_samples,
+    result = _evaluate_calibration_quick_check(
+        quick_samples,
+        wrist_quaternions,
         calibration=calibration,
+        wrist_calibration=wrist_calibration,
+        reuse_config=reuse_config,
+        wrist_rotation_config=wrist_rotation_config,
         min_valid_frames=min_valid_frames,
-        open_mad_multiplier=reuse_config.open_mad_multiplier,
-        open_distance_range_ratio=reuse_config.open_distance_range_ratio,
-        open_distance_min_tolerance=reuse_config.open_distance_min_tolerance,
+        calibration_config=calibration_config,
+        attempt_count=1,
+        reacquired_components=(),
     )
-    if not pinch_result.passed:
-        return pinch_result
+    if result.passed or reuse_config.quick_check_max_attempts <= 1:
+        return result
+    failed_components = tuple(
+        component
+        for component, status in result.quick_check_component_status.items()
+        if not bool(status.get("passed", False))
+    )
+    if not failed_components:
+        return result
+    print(
+        "[CALIBRATION] quick check retry for failed component(s): "
+        + ", ".join(failed_components)
+    )
+    for component in failed_components:
+        if component in {"open", "contact", "pinch"}:
+            quick_samples[component] = _acquire_staged_pinch_state(
+                server,
+                parser,
+                logger,
+                state=component,
+                repetition_index=2,
+                session_id=session_id,
+                duration_s=calibration_config.quick_check_recording_duration_s,
+                save_raw_frames=save_raw,
+                tcp_log_state=tcp_log_state,
+                flush_events=flush_events,
+                calibration_config=replace(
+                    calibration_config,
+                    min_valid_frames=min_valid_frames,
+                    repetition_count=1,
+                ),
+                phase_prefix="quick_check_retry",
+            )
+        elif component == "wrist_neutral":
+            wrist_quaternions = _acquire_quick_check_wrist_neutral(
+                server,
+                logger,
+                wrist_calibration=wrist_calibration,
+                wrist_rotation_config=wrist_rotation_config,
+                calibration_config=calibration_config,
+                session_id=session_id,
+                save_raw_frames=save_raw,
+                tcp_log_state=tcp_log_state,
+                flush_events=flush_events,
+            )
+    return _evaluate_calibration_quick_check(
+        quick_samples,
+        wrist_quaternions,
+        calibration=calibration,
+        wrist_calibration=wrist_calibration,
+        reuse_config=reuse_config,
+        wrist_rotation_config=wrist_rotation_config,
+        min_valid_frames=min_valid_frames,
+        calibration_config=calibration_config,
+        attempt_count=2,
+        reacquired_components=failed_components,
+    )
+
+
+def _acquire_quick_check_wrist_neutral(
+    server: LiveRawStreamServer,
+    logger: DualTaskLogger,
+    *,
+    wrist_calibration: WristRotationCalibrationResult | None,
+    wrist_rotation_config: WristRotationConfig,
+    calibration_config: PinchCalibrationConfig,
+    session_id: str,
+    save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None,
+    flush_events: list[dict[str, Any]] | None = None,
+) -> list[tuple[float, float, float, float]]:
     if not wrist_rotation_config.enabled:
-        return pinch_result
+        return []
     if wrist_calibration is None or not wrist_calibration.calibration_passed:
-        return replace(
-            pinch_result,
-            passed=False,
-            reason="missing_or_failed_wrist_calibration_in_bundle",
-            wrist_checked=True,
-        )
-    quaternions = _collect_live_wrist_quaternions(
+        return []
+    _prompt_enter_or_abort(
+        "WRIST NEUTRAL: relax wrist to neutral, then press Enter to wait for stability..."
+    )
+    stable = _wait_for_stable_wrist_signal(
         server,
         logger,
         config=wrist_rotation_config,
-        duration_s=reuse_config.quick_check_duration_s,
+        calibration_config=calibration_config,
+        session_id=session_id,
+        save_raw_frames=save_raw_frames,
+        tcp_log_state=tcp_log_state,
+        flush_events=flush_events,
+        phase="quick_check_wrist_neutral_wait_stability",
+    )
+    if not stable:
+        print(
+            "[CALIBRATION] wrist neutral did not reach stability before timeout; "
+            "recording best-effort quick check window."
+        )
+    return _collect_live_wrist_quaternions(
+        server,
+        logger,
+        config=wrist_rotation_config,
+        duration_s=calibration_config.quick_check_recording_duration_s,
         save_raw_frames=save_raw_frames,
         tcp_log_state=tcp_log_state,
         phase="quick_check_wrist_neutral",
         flush_events=flush_events,
     )
-    wrist_result = _wrist_neutral_quick_check_from_quaternions(
-        quaternions,
-        calibration=wrist_calibration,
-        min_valid_frames=wrist_rotation_config.min_valid_frames,
-        min_neutral_ratio=reuse_config.wrist_neutral_min_ratio,
+
+
+def _evaluate_calibration_quick_check(
+    samples_by_state: dict[str, list[Any]],
+    wrist_quaternions: list[tuple[float, float, float, float]],
+    *,
+    calibration: PinchCalibrationResult,
+    wrist_calibration: WristRotationCalibrationResult | None,
+    reuse_config: CalibrationReuseConfig,
+    wrist_rotation_config: WristRotationConfig,
+    min_valid_frames: int,
+    calibration_config: PinchCalibrationConfig,
+    attempt_count: int,
+    reacquired_components: tuple[str, ...],
+) -> CalibrationQuickCheckResult:
+    state_summaries = {
+        state: _quick_check_state_summary(samples_by_state.get(state, ()))
+        for state in ("open", "contact", "pinch")
+    }
+    current_state = _current_finger_state_validity(
+        state_summaries,
+        min_valid_frames=min_valid_frames,
+        calibration_config=calibration_config,
     )
-    return replace(
-        pinch_result,
-        passed=pinch_result.passed and wrist_result["passed"],
-        reason=wrist_result["reason"],
-        wrist_checked=True,
-        wrist_valid_frame_count=wrist_result["valid_count"],
-        wrist_neutral_count=wrist_result["neutral_count"],
-        wrist_neutral_ratio=wrist_result["neutral_ratio"],
+    compatibility = _saved_finger_calibration_compatibility(
+        samples_by_state,
+        calibration=calibration,
+        min_ratio=reuse_config.saved_classification_min_ratio,
+        min_margin_ratio=reuse_config.saved_boundary_margin_min_ratio,
     )
+    component_status: dict[str, Any] = {
+        state: {
+            "passed": (
+                state not in current_state["failed_components"]
+                and state not in compatibility["failed_components"]
+            ),
+            "current_state_reasons": current_state["component_reasons"].get(state, ()),
+            "saved_compatibility_reasons": compatibility["component_reasons"].get(state, ()),
+        }
+        for state in ("open", "contact", "pinch")
+    }
+    wrist_result = {
+        "passed": True,
+        "reason": "",
+        "valid_count": 0,
+        "neutral_count": 0,
+        "neutral_ratio": None,
+    }
+    if wrist_rotation_config.enabled:
+        if wrist_calibration is None or not wrist_calibration.calibration_passed:
+            wrist_result = {
+                "passed": False,
+                "reason": "missing_or_failed_wrist_calibration_in_bundle",
+                "valid_count": 0,
+                "neutral_count": 0,
+                "neutral_ratio": None,
+            }
+        else:
+            wrist_result = _wrist_neutral_quick_check_from_quaternions(
+                wrist_quaternions,
+                calibration=wrist_calibration,
+                min_valid_frames=wrist_rotation_config.min_valid_frames,
+                min_neutral_ratio=reuse_config.wrist_neutral_min_ratio,
+                reuse_config=reuse_config,
+            )
+        component_status["wrist_neutral"] = {
+            "passed": bool(wrist_result["passed"]),
+            "reasons": (wrist_result["reason"],) if wrist_result["reason"] else (),
+            "method": wrist_result.get("method", ""),
+        }
+
+    failure_reasons: list[str] = []
+    failure_reasons.extend(current_state["reasons"])
+    failure_reasons.extend(compatibility["reasons"])
+    if wrist_result.get("reason"):
+        failure_reasons.append(str(wrist_result["reason"]))
+    failure_reasons = list(dict.fromkeys(reason for reason in failure_reasons if reason))
+    passed = not failure_reasons
+    reason = ";".join(failure_reasons)
+    return CalibrationQuickCheckResult(
+        enabled=True,
+        passed=passed,
+        reason=reason,
+        open_valid_frame_count=int(state_summaries["open"]["valid_count"]),
+        contact_valid_frame_count=int(state_summaries["contact"]["valid_count"]),
+        pinch_valid_frame_count=int(state_summaries["pinch"]["valid_count"]),
+        open_reference_median=calibration.open_distance_median,
+        open_reference_mad=calibration.open_distance_mad,
+        open_distance_median=state_summaries["open"]["median"],
+        open_distance_mad=state_summaries["open"]["mad"],
+        open_distance_delta=_optional_abs_delta(
+            state_summaries["open"]["median"],
+            calibration.open_distance_median,
+        ),
+        open_distance_tolerance=None,
+        contact_distance_median=state_summaries["contact"]["median"],
+        pinch_distance_median=state_summaries["pinch"]["median"],
+        normalized_contact_position=current_state.get("normalized_contact_position"),
+        wrist_checked=bool(wrist_rotation_config.enabled),
+        wrist_valid_frame_count=int(wrist_result.get("valid_count") or 0),
+        wrist_neutral_count=int(wrist_result.get("neutral_count") or 0),
+        wrist_neutral_ratio=wrist_result.get("neutral_ratio"),
+        quick_check_attempt_count=attempt_count,
+        quick_check_retry_used=attempt_count > 1,
+        quick_check_reacquired_components=tuple(reacquired_components),
+        quick_check_component_status=component_status,
+        quick_check_failure_reasons=tuple(failure_reasons),
+        current_state_validity=current_state,
+        saved_calibration_compatibility=compatibility,
+    )
+
+
+def _quick_check_state_summary(samples: Iterable[Any]) -> dict[str, Any]:
+    distances = _valid_pinch_distances(samples)
+    if not distances:
+        return {
+            "valid_count": 0,
+            "median": None,
+            "mad": None,
+            "p10": None,
+            "p90": None,
+        }
+    center = median(distances)
+    ordered = sorted(distances)
+    return {
+        "valid_count": len(distances),
+        "median": center,
+        "mad": median([abs(value - center) for value in distances]),
+        "p10": _percentile(ordered, 0.10),
+        "p90": _percentile(ordered, 0.90),
+    }
+
+
+def _current_finger_state_validity(
+    summaries: dict[str, dict[str, Any]],
+    *,
+    min_valid_frames: int,
+    calibration_config: PinchCalibrationConfig,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    component_reasons: dict[str, list[str]] = {state: [] for state in ("open", "contact", "pinch")}
+    for state, summary in summaries.items():
+        if int(summary.get("valid_count") or 0) < int(min_valid_frames):
+            reason = f"{state}_not_enough_valid_quick_check_frames"
+            reasons.append(reason)
+            component_reasons[state].append(reason)
+    open_median = summaries["open"].get("median")
+    contact_median = summaries["contact"].get("median")
+    pinch_median = summaries["pinch"].get("median")
+    normalized_contact = None
+    open_contact_gap = None
+    contact_pinch_gap = None
+    open_contact_gap_ratio = None
+    contact_pinch_gap_ratio = None
+    if None not in {open_median, contact_median, pinch_median}:
+        open_median = float(open_median)
+        contact_median = float(contact_median)
+        pinch_median = float(pinch_median)
+        if not (open_median > contact_median > pinch_median):
+            reasons.append("quick_check_order_not_open_contact_pinch")
+            for state in ("open", "contact", "pinch"):
+                component_reasons[state].append("quick_check_order_not_open_contact_pinch")
+        open_pinch_range = open_median - pinch_median
+        open_contact_gap = open_median - contact_median
+        contact_pinch_gap = contact_median - pinch_median
+        if open_pinch_range > 0.0:
+            open_contact_gap_ratio = open_contact_gap / open_pinch_range
+            contact_pinch_gap_ratio = contact_pinch_gap / open_pinch_range
+            normalized_contact = open_contact_gap_ratio
+            if open_contact_gap_ratio < calibration_config.min_state_gap_ratio:
+                reason = "quick_check_open_contact_gap_too_small"
+                reasons.append(reason)
+                component_reasons["open"].append(reason)
+                component_reasons["contact"].append(reason)
+            if contact_pinch_gap_ratio < calibration_config.min_state_gap_ratio:
+                reason = "quick_check_contact_pinch_gap_too_small"
+                reasons.append(reason)
+                component_reasons["contact"].append(reason)
+                component_reasons["pinch"].append(reason)
+            if (
+                calibration_config.contact_position_min is not None
+                and normalized_contact < calibration_config.contact_position_min
+            ):
+                reason = "quick_check_contact_position_too_close_to_open"
+                reasons.append(reason)
+                component_reasons["contact"].append(reason)
+            if (
+                calibration_config.contact_position_max is not None
+                and normalized_contact > calibration_config.contact_position_max
+            ):
+                reason = "quick_check_contact_position_too_close_to_pinch"
+                reasons.append(reason)
+                component_reasons["contact"].append(reason)
+        else:
+            reasons.append("quick_check_open_pinch_range_too_small")
+            for state in ("open", "contact", "pinch"):
+                component_reasons[state].append("quick_check_open_pinch_range_too_small")
+    failed_components = tuple(
+        state for state, items in component_reasons.items() if items
+    )
+    return {
+        "passed": not reasons,
+        "reasons": tuple(dict.fromkeys(reasons)),
+        "failed_components": failed_components,
+        "component_reasons": component_reasons,
+        "state_summaries": summaries,
+        "open_contact_gap": open_contact_gap,
+        "contact_pinch_gap": contact_pinch_gap,
+        "open_contact_gap_ratio": open_contact_gap_ratio,
+        "contact_pinch_gap_ratio": contact_pinch_gap_ratio,
+        "normalized_contact_position": normalized_contact,
+    }
+
+
+def _saved_finger_calibration_compatibility(
+    samples_by_state: dict[str, list[Any]],
+    *,
+    calibration: PinchCalibrationResult,
+    min_ratio: float,
+    min_margin_ratio: float,
+) -> dict[str, Any]:
+    lower = calibration.contact_pinch_boundary
+    upper = calibration.open_contact_boundary
+    open_range = calibration.distance_range
+    if (
+        int(getattr(calibration, "calibration_schema_version", 1)) < 2
+        or lower is None
+        or upper is None
+        or open_range is None
+        or float(open_range) <= 0.0
+    ):
+        return {
+            "passed": False,
+            "reasons": ("legacy_calibration_requires_new_full_calibration",),
+            "failed_components": ("open", "contact", "pinch"),
+            "component_reasons": {
+                state: ("legacy_calibration_requires_new_full_calibration",)
+                for state in ("open", "contact", "pinch")
+            },
+        }
+    ratios: dict[str, float | None] = {}
+    margins: dict[str, float | None] = {}
+    reasons: list[str] = []
+    component_reasons: dict[str, list[str]] = {state: [] for state in ("open", "contact", "pinch")}
+    for state in ("open", "contact", "pinch"):
+        distances = _valid_pinch_distances(samples_by_state.get(state, ()))
+        if not distances:
+            ratios[state] = None
+            margins[state] = None
+            reason = f"{state}_saved_classification_unavailable"
+            reasons.append(reason)
+            component_reasons[state].append(reason)
+            continue
+        expected_count = sum(
+            1
+            for distance in distances
+            if _saved_finger_state(distance, lower=float(lower), upper=float(upper)) == state
+        )
+        ratio = expected_count / len(distances)
+        ratios[state] = ratio
+        current_median = median(distances)
+        margin = _saved_boundary_margin(
+            state,
+            current_median,
+            lower=float(lower),
+            upper=float(upper),
+        )
+        margin_ratio = margin / float(open_range)
+        margins[state] = margin_ratio
+        if ratio < min_ratio:
+            reason = f"{state}_saved_classification_ratio_too_low"
+            reasons.append(reason)
+            component_reasons[state].append(reason)
+        if margin_ratio < min_margin_ratio:
+            reason = f"{state}_saved_boundary_margin_too_small"
+            reasons.append(reason)
+            component_reasons[state].append(reason)
+    failed_components = tuple(
+        state for state, items in component_reasons.items() if items
+    )
+    return {
+        "passed": not reasons,
+        "reasons": tuple(dict.fromkeys(reasons)),
+        "failed_components": failed_components,
+        "component_reasons": component_reasons,
+        "classification_ratios": ratios,
+        "boundary_margin_ratios": margins,
+        "open_contact_boundary": upper,
+        "contact_pinch_boundary": lower,
+    }
+
+
+def _saved_finger_state(distance: float, *, lower: float, upper: float) -> str:
+    if distance > upper:
+        return "open"
+    if distance < lower:
+        return "pinch"
+    return "contact"
+
+
+def _saved_boundary_margin(
+    state: str,
+    value: float,
+    *,
+    lower: float,
+    upper: float,
+) -> float:
+    if state == "open":
+        return value - upper
+    if state == "pinch":
+        return lower - value
+    return min(value - lower, upper - value)
+
+
+def _optional_abs_delta(a: float | None, b: float | None) -> float | None:
+    if a is None or b is None:
+        return None
+    return abs(float(a) - float(b))
 
 
 def _pinch_open_quick_check_from_samples(
@@ -1446,6 +1974,26 @@ def _calibration_quick_check_detail_lines(
             + f"{result.wrist_neutral_count}/{result.wrist_valid_frame_count} "
             + f"frames, ratio={_format_optional_float(result.wrist_neutral_ratio, digits=3)}"
         )
+    if result.contact_distance_median is not None or result.pinch_distance_median is not None:
+        lines.append(
+            "state medians: "
+            + f"open={_format_distance_mm(result.open_distance_median)}, "
+            + f"C={_format_distance_mm(result.contact_distance_median)}, "
+            + f"pinch={_format_distance_mm(result.pinch_distance_median)}"
+        )
+    if result.normalized_contact_position is not None:
+        lines.append(
+            "normalized C position: "
+            + _format_optional_float(result.normalized_contact_position, digits=3)
+        )
+    if result.quick_check_failure_reasons:
+        lines.append(
+            "failure reasons: " + ";".join(result.quick_check_failure_reasons)
+        )
+    if result.quick_check_reacquired_components:
+        lines.append(
+            "reacquired components: " + ",".join(result.quick_check_reacquired_components)
+        )
     return lines
 
 
@@ -1467,40 +2015,18 @@ def _wrist_neutral_quick_check_from_quaternions(
     calibration: WristRotationCalibrationResult,
     min_valid_frames: int,
     min_neutral_ratio: float,
+    reuse_config: CalibrationReuseConfig | None = None,
 ) -> dict[str, Any]:
-    valid_count = 0
-    neutral_count = 0
-    for q in quaternions:
-        sample = classify_wrist_rotation(q, calibration)
-        lr_neutral = (
-            sample.wrist_rotation_valid
-            and sample.wrist_rotation_class == "neutral"
-        )
-        ud_required = bool(calibration.up_down_calibration_passed)
-        ud_neutral = (
-            not ud_required
-            or (
-                sample.wrist_up_down_valid
-                and sample.wrist_up_down_class == "neutral"
-            )
-        )
-        if sample.wrist_rotation_valid:
-            valid_count += 1
-        if lr_neutral and ud_neutral:
-            neutral_count += 1
-    ratio = neutral_count / valid_count if valid_count > 0 else None
-    reason = ""
-    if valid_count < int(min_valid_frames):
-        reason = "not_enough_valid_wrist_quick_check_frames"
-    elif ratio is None or ratio < float(min_neutral_ratio):
-        reason = "wrist_not_neutral_enough_for_saved_calibration"
-    return {
-        "passed": not reason,
-        "reason": reason,
-        "valid_count": valid_count,
-        "neutral_count": neutral_count,
-        "neutral_ratio": ratio,
-    }
+    cfg = reuse_config or CalibrationReuseConfig()
+    return neutral_centered_wrist_quick_check(
+        quaternions,
+        calibration,
+        min_valid_frames=min_valid_frames,
+        min_neutral_ratio=min_neutral_ratio,
+        noise_multiplier=cfg.wrist_neutral_noise_multiplier,
+        action_range_ratio=cfg.wrist_neutral_action_range_ratio,
+        absolute_floor=cfg.wrist_neutral_absolute_floor,
+    )
 
 
 def _valid_pinch_distances(samples: Iterable[Any]) -> list[float]:
@@ -1616,6 +2142,219 @@ def _frame_age_ms(frame: Any, *, now_s: float | None = None) -> float | None:
     if not math.isfinite(age):
         return None
     return max(0.0, age)
+
+
+def _acquire_staged_pinch_state(
+    server: LiveRawStreamServer,
+    parser: ManusOnlyPinchInput,
+    logger: DualTaskLogger,
+    *,
+    state: str,
+    repetition_index: int,
+    session_id: str,
+    duration_s: float,
+    save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None,
+    calibration_config: PinchCalibrationConfig,
+    phase_prefix: str,
+    flush_events: list[dict[str, Any]] | None = None,
+) -> list[PinchInputSample]:
+    label = _pinch_state_prompt_label(state)
+    for attempt in range(1, calibration_config.max_acquisition_attempts + 1):
+        phase = f"{phase_prefix}_{state}_rep{repetition_index}_attempt{attempt}"
+        _prompt_enter_or_abort(
+            f"{label}: arrange the posture, then press Enter to wait for stability..."
+        )
+        print(f"[CALIBRATION] waiting for stable {label} signal...")
+        stable = _wait_for_stable_pinch_signal(
+            server,
+            parser,
+            logger,
+            session_id=session_id,
+            phase=phase + "_wait_stability",
+            save_raw_frames=save_raw_frames,
+            tcp_log_state=tcp_log_state,
+            calibration_config=calibration_config,
+            flush_events=flush_events,
+        )
+        if not stable["passed"]:
+            print(f"[CALIBRATION] stability wait failed: {stable['reason']}")
+            continue
+        print(f"[CALIBRATION] recording {label} stable window...")
+        samples = _collect_live_calibration_samples(
+            server,
+            parser,
+            logger,
+            session_id=session_id,
+            duration_s=duration_s,
+            save_raw_frames=save_raw_frames,
+            tcp_log_state=tcp_log_state,
+            phase=phase,
+            flush_events=flush_events,
+        )
+        quality = _pinch_recording_quality(
+            samples,
+            calibration_config=calibration_config,
+        )
+        if quality["passed"]:
+            print(f"[CALIBRATION] accepted {label} rep {repetition_index}.")
+            return samples
+        print(f"[CALIBRATION] reacquire {label}: {quality['reason']}")
+    return samples if "samples" in locals() else []
+
+
+def _wait_for_stable_pinch_signal(
+    server: LiveRawStreamServer,
+    parser: ManusOnlyPinchInput,
+    logger: DualTaskLogger,
+    *,
+    session_id: str,
+    phase: str,
+    save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None,
+    calibration_config: PinchCalibrationConfig,
+    flush_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    flush_info = _flush_manus_queue(
+        server,
+        phase=phase,
+        flush_events=flush_events,
+    )
+    queue_depth_at_phase_start = _queue_depth(server)
+    deadline = time.monotonic() + calibration_config.stability_timeout_s
+    stable_since: float | None = None
+    window: list[PinchInputSample] = []
+    last_reason = "not_enough_samples"
+    while time.monotonic() < deadline:
+        queue_depth_before_read = _queue_depth(server)
+        latest_received_frame_index = _latest_received_frame_index(server)
+        frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
+        if frame is None:
+            continue
+        first_frame_index_after_flush = _mark_first_frame_after_flush(flush_info, frame)
+        raw = _raw_from_live_frame(frame)
+        if save_raw_frames:
+            logger.write_raw_frame(raw)
+        sample = parser.parse_sample(frame, session_id=session_id)
+        logger.write_calibration_sample(
+            sample,
+            phase=phase,
+            queue_depth=queue_depth_before_read,
+            queue_depth_at_phase_start=queue_depth_at_phase_start,
+            queue_depth_before_flush=flush_info["queue_depth_before_flush"],
+            flushed_count=flush_info["flushed_count"],
+            first_frame_index_after_flush=first_frame_index_after_flush,
+            latest_received_frame_index=latest_received_frame_index,
+            frame_age_ms=_frame_age_ms(frame),
+        )
+        window.append(sample)
+        cutoff_ms = float(sample.monotonic_ms or 0.0) - calibration_config.stability_window_s * 1000.0
+        window = [
+            item
+            for item in window
+            if item.monotonic_ms is None or float(item.monotonic_ms) >= cutoff_ms
+        ]
+        quality = _pinch_stability_quality(
+            window,
+            calibration_config=calibration_config,
+        )
+        if quality["passed"]:
+            if stable_since is None:
+                stable_since = time.monotonic()
+            if time.monotonic() - stable_since >= calibration_config.stability_dwell_s:
+                return {"passed": True, "reason": "", **quality}
+        else:
+            stable_since = None
+            last_reason = str(quality["reason"])
+    return {"passed": False, "reason": last_reason}
+
+
+def _pinch_recording_quality(
+    samples: Iterable[Any],
+    *,
+    calibration_config: PinchCalibrationConfig,
+) -> dict[str, Any]:
+    return _pinch_stability_quality(
+        list(samples),
+        calibration_config=calibration_config,
+        require_min_valid_frames=True,
+    )
+
+
+def _pinch_stability_quality(
+    samples: list[Any],
+    *,
+    calibration_config: PinchCalibrationConfig,
+    require_min_valid_frames: bool = False,
+) -> dict[str, Any]:
+    total_count = len(samples)
+    distances = _valid_pinch_distances(samples)
+    valid_ratio = len(distances) / total_count if total_count > 0 else 0.0
+    if require_min_valid_frames and len(distances) < calibration_config.min_valid_frames:
+        return {
+            "passed": False,
+            "reason": "not_enough_valid_frames",
+            "valid_count": len(distances),
+            "valid_ratio": valid_ratio,
+        }
+    if valid_ratio < calibration_config.stability_valid_ratio_min:
+        return {
+            "passed": False,
+            "reason": "valid_ratio_too_low",
+            "valid_count": len(distances),
+            "valid_ratio": valid_ratio,
+        }
+    if not distances:
+        return {
+            "passed": False,
+            "reason": "not_enough_samples",
+            "valid_count": 0,
+            "valid_ratio": valid_ratio,
+        }
+    center = median(distances)
+    mad = median([abs(value - center) for value in distances])
+    spread = max(distances) - min(distances)
+    if (
+        calibration_config.stability_mad_max is not None
+        and mad > calibration_config.stability_mad_max
+    ):
+        return {
+            "passed": False,
+            "reason": "distance_mad_too_large",
+            "valid_count": len(distances),
+            "valid_ratio": valid_ratio,
+            "mad": mad,
+            "range": spread,
+        }
+    if (
+        calibration_config.stability_range_max is not None
+        and spread > calibration_config.stability_range_max
+    ):
+        return {
+            "passed": False,
+            "reason": "distance_range_too_large",
+            "valid_count": len(distances),
+            "valid_ratio": valid_ratio,
+            "mad": mad,
+            "range": spread,
+        }
+    return {
+        "passed": True,
+        "reason": "",
+        "valid_count": len(distances),
+        "valid_ratio": valid_ratio,
+        "median": center,
+        "mad": mad,
+        "range": spread,
+    }
+
+
+def _pinch_state_prompt_label(state: str) -> str:
+    return {
+        "open": "OPEN",
+        "contact": "C-SHAPE",
+        "pinch": "PINCH",
+    }.get(state, state.upper())
 
 
 def _collect_live_calibration_samples(
@@ -1769,6 +2508,112 @@ def _run_live_wrist_rotation_calibration(
     if config.save_timeseries:
         print(f"[WRIST] writing {logger.paths.wrist_rotation_timeseries_csv.name}")
     return result
+
+
+def _wait_for_stable_wrist_signal(
+    server: LiveRawStreamServer,
+    logger: DualTaskLogger,
+    *,
+    config: WristRotationConfig,
+    calibration_config: PinchCalibrationConfig,
+    session_id: str,
+    save_raw_frames: bool,
+    tcp_log_state: ManusTcpLogState | None = None,
+    flush_events: list[dict[str, Any]] | None = None,
+    phase: str = "wrist_wait_stability",
+) -> bool:
+    flush_info = _flush_manus_queue(
+        server,
+        phase=phase,
+        flush_events=flush_events,
+    )
+    window_s = max(0.05, float(calibration_config.stability_window_s))
+    dwell_s = max(0.0, float(calibration_config.stability_dwell_s))
+    deadline = time.monotonic() + max(0.1, float(calibration_config.stability_timeout_s))
+    max_angle_rad = math.radians(float(config.neutral_stability_angle_max_deg))
+    estimated_window_frames = int(
+        math.ceil(float(config.min_valid_frames) * window_s / max(0.1, config.calibration_duration_s))
+    )
+    min_window_frames = max(3, estimated_window_frames)
+    window: list[tuple[float, tuple[float, float, float, float]]] = []
+    stable_since: float | None = None
+
+    while time.monotonic() < deadline:
+        frame = _get_manus_frame(server, timeout=0.1, log_state=tcp_log_state)
+        if frame is None:
+            stable_since = None
+            continue
+        _mark_first_frame_after_flush(flush_info, frame)
+        raw = _raw_from_live_frame(frame)
+        if save_raw_frames:
+            logger.write_raw_frame(raw)
+        q = extract_wrist_quaternion(
+            frame,
+            node_id=config.node_id,
+            quaternion_order=config.quaternion_order,
+        )
+        if q is None:
+            stable_since = None
+            continue
+        now = time.monotonic()
+        window.append((now, q))
+        cutoff = now - window_s
+        window = [(t, item) for t, item in window if t >= cutoff]
+        quality = _wrist_stability_quality(
+            [item for _, item in window],
+            min_window_frames=min_window_frames,
+            max_angle_rad=max_angle_rad,
+        )
+        if not quality["stable"]:
+            stable_since = None
+            continue
+        if stable_since is None:
+            stable_since = now
+        if now - stable_since >= dwell_s:
+            print(
+                "[CALIBRATION] wrist neutral stable: "
+                f"valid_frames={quality['valid_count']} "
+                f"max_angle_deg={quality['max_angle_deg']:.2f}"
+            )
+            return True
+    return False
+
+
+def _wrist_stability_quality(
+    quaternions: Iterable[Iterable[float]],
+    *,
+    min_window_frames: int,
+    max_angle_rad: float,
+) -> dict[str, Any]:
+    values: list[tuple[float, float, float, float]] = []
+    for item in quaternions:
+        try:
+            values.append(tuple(float(part) for part in item))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    if len(values) < int(min_window_frames):
+        return {
+            "stable": False,
+            "valid_count": len(values),
+            "max_angle_deg": None,
+            "reason": "not_enough_valid_wrist_stability_frames",
+        }
+    try:
+        center = mean_quaternion(values)
+        max_angle = max(quaternion_angle(relative_quaternion(q, center)) for q in values)
+    except ValueError:
+        return {
+            "stable": False,
+            "valid_count": len(values),
+            "max_angle_deg": None,
+            "reason": "invalid_wrist_stability_quaternion",
+        }
+    return {
+        "stable": max_angle <= float(max_angle_rad),
+        "valid_count": len(values),
+        "max_angle_deg": math.degrees(max_angle),
+        "reason": "" if max_angle <= float(max_angle_rad) else "wrist_signal_not_stable",
+    }
 
 
 def _collect_live_wrist_quaternions(
@@ -2404,17 +3249,44 @@ def _calibration_summary_fields(
         "pinch_distance_median": calibration.pinch_distance_median,
         "open_contact_boundary": calibration.open_contact_boundary,
         "contact_pinch_boundary": calibration.contact_pinch_boundary,
+        "calibration_schema_version": calibration.calibration_schema_version,
+        "acquisition_protocol": calibration.acquisition_protocol,
+        "finger_repetition_count": calibration.finger_repetition_count,
+        "normalized_contact_position": calibration.normalized_contact_position,
+        "contact_rep_position_range": calibration.contact_rep_position_range,
+        "contact_rep_position_mad": calibration.contact_rep_position_mad,
+        "full_calibration_qc_passed": calibration.full_calibration_qc_passed,
+        "full_calibration_qc_reasons": list(calibration.full_calibration_qc_reasons),
     }
 
 
 def _should_enter_formal_phase(calibration: PinchCalibrationResult) -> bool:
-    return bool(calibration.calibration_passed)
+    if not bool(calibration.calibration_passed):
+        return False
+    if calibration.full_calibration_qc_passed is False:
+        return False
+    return True
+
+
+def _live_calibration_failure_reason(calibration: PinchCalibrationResult) -> str:
+    reason = str(getattr(calibration, "calibration_failure_reason", "") or "")
+    if reason:
+        return reason
+    qc_reasons = getattr(calibration, "full_calibration_qc_reasons", ()) or ()
+    text = ";".join(str(item) for item in qc_reasons if str(item))
+    return text or "full_calibration_qc_failed"
 
 
 def _calibration_reuse_block_reason(calibration: PinchCalibrationResult) -> str:
+    if int(getattr(calibration, "calibration_schema_version", 1) or 1) < 2:
+        return "legacy_calibration_requires_new_full_calibration"
     if not bool(getattr(calibration, "calibration_passed", False)):
         reason = str(getattr(calibration, "calibration_failure_reason", "") or "")
         return "loaded_calibration_failed" + (f":{reason}" if reason else "")
+    if getattr(calibration, "full_calibration_qc_passed", None) is False:
+        reasons = getattr(calibration, "full_calibration_qc_reasons", ()) or ()
+        text = ";".join(str(item) for item in reasons if str(item))
+        return "loaded_full_calibration_qc_failed" + (f":{text}" if text else "")
     if not bool(getattr(calibration, "pinch_reference_quality_passed", False)):
         reason = str(getattr(calibration, "pinch_reference_quality_reason", "") or "")
         return "loaded_pinch_reference_quality_failed" + (

@@ -29,6 +29,7 @@ class WristRotationConfig:
     down_label: str = "down"
     enable_up_down: bool = False
     classification_margin: float = 0.15
+    neutral_stability_angle_max_deg: float = 8.0
     save_timeseries: bool = True
     required: bool = False
 
@@ -51,6 +52,12 @@ class WristRotationConfig:
         if not math.isfinite(margin) or margin < 0.0:
             raise ValueError("wrist_rotation.classification_margin must be non-negative.")
         object.__setattr__(self, "classification_margin", margin)
+        stability_angle = float(self.neutral_stability_angle_max_deg)
+        if not math.isfinite(stability_angle) or stability_angle <= 0.0:
+            raise ValueError(
+                "wrist_rotation.neutral_stability_angle_max_deg must be positive."
+            )
+        object.__setattr__(self, "neutral_stability_angle_max_deg", stability_angle)
         if not isinstance(self.enable_up_down, bool):
             raise ValueError("wrist_rotation.enable_up_down must be true or false.")
         if not isinstance(self.save_timeseries, bool):
@@ -146,6 +153,7 @@ def wrist_rotation_config_from_dict(payload: dict[str, Any] | None) -> WristRota
         down_label=str(value.get("down_label", "down")),
         enable_up_down=bool(value.get("enable_up_down", False)),
         classification_margin=value.get("classification_margin", 0.15),
+        neutral_stability_angle_max_deg=value.get("neutral_stability_angle_max_deg", 8.0),
         save_timeseries=bool(value.get("save_timeseries", True)),
         required=bool(value.get("required", False)),
     )
@@ -548,6 +556,136 @@ def classify_wrist_rotation_frame(
         source_frame_id=source_frame_id,
         session_id=session_id,
     )
+
+
+def neutral_centered_wrist_quick_check(
+    quaternions: Iterable[Iterable[float]],
+    calibration_result: WristRotationCalibrationResult,
+    *,
+    min_valid_frames: int,
+    min_neutral_ratio: float,
+    noise_multiplier: float = 6.0,
+    action_range_ratio: float = 0.10,
+    absolute_floor: float = 0.02,
+) -> dict[str, Any]:
+    """Check neutral samples against zero-centered saved wrist action axes."""
+
+    if (
+        not calibration_result.calibration_passed
+        or calibration_result.neutral_mean_q is None
+        or calibration_result.rotation_axis_vector is None
+        or calibration_result.left_score_mean is None
+        or calibration_result.right_score_mean is None
+    ):
+        return {
+            "passed": False,
+            "reason": "missing_or_failed_wrist_calibration_in_bundle",
+            "valid_count": 0,
+            "neutral_count": 0,
+            "neutral_ratio": None,
+        }
+    lr_tolerance = _neutral_centered_tolerance(
+        calibration_result.neutral_lr_score_summary,
+        calibration_result.left_score_mean,
+        calibration_result.right_score_mean,
+        noise_multiplier=noise_multiplier,
+        action_range_ratio=action_range_ratio,
+        absolute_floor=absolute_floor,
+    )
+    ud_required = bool(calibration_result.up_down_calibration_passed)
+    ud_tolerance = None
+    if ud_required:
+        if (
+            calibration_result.up_down_axis_vector is None
+            or calibration_result.up_score_mean is None
+            or calibration_result.down_score_mean is None
+        ):
+            return {
+                "passed": False,
+                "reason": "missing_or_failed_wrist_up_down_calibration_in_bundle",
+                "valid_count": 0,
+                "neutral_count": 0,
+                "neutral_ratio": None,
+            }
+        ud_tolerance = _neutral_centered_tolerance(
+            calibration_result.neutral_up_down_score_summary,
+            calibration_result.up_score_mean,
+            calibration_result.down_score_mean,
+            noise_multiplier=noise_multiplier,
+            action_range_ratio=action_range_ratio,
+            absolute_floor=absolute_floor,
+        )
+
+    valid_count = 0
+    neutral_count = 0
+    lr_scores: list[float] = []
+    ud_scores: list[float] = []
+    for item in quaternions:
+        try:
+            q = normalize_quaternion(item)
+        except ValueError:
+            continue
+        lr_score = _score(
+            q,
+            calibration_result.neutral_mean_q,
+            calibration_result.rotation_axis_vector,
+        )
+        valid_count += 1
+        lr_scores.append(lr_score)
+        lr_neutral = abs(lr_score) <= lr_tolerance
+        ud_neutral = True
+        if ud_required:
+            ud_score = _score(
+                q,
+                calibration_result.neutral_mean_q,
+                calibration_result.up_down_axis_vector,  # type: ignore[arg-type]
+            )
+            ud_scores.append(ud_score)
+            ud_neutral = abs(ud_score) <= float(ud_tolerance)
+        if lr_neutral and ud_neutral:
+            neutral_count += 1
+    ratio = neutral_count / valid_count if valid_count > 0 else None
+    reason = ""
+    if valid_count < int(min_valid_frames):
+        reason = "not_enough_valid_wrist_quick_check_frames"
+    elif ratio is None or ratio < float(min_neutral_ratio):
+        reason = "wrist_not_neutral_enough_for_saved_calibration"
+    return {
+        "passed": not reason,
+        "reason": reason,
+        "valid_count": valid_count,
+        "neutral_count": neutral_count,
+        "neutral_ratio": ratio,
+        "lr_tolerance": lr_tolerance,
+        "ud_tolerance": ud_tolerance,
+        "lr_score_summary": _score_summary(lr_scores),
+        "ud_score_summary": _score_summary(ud_scores) if ud_scores else {},
+        "method": "neutral_centered_axis_projection_v1",
+    }
+
+
+def _neutral_centered_tolerance(
+    neutral_summary: dict[str, float | int | None],
+    positive_score: float,
+    negative_score: float,
+    *,
+    noise_multiplier: float,
+    action_range_ratio: float,
+    absolute_floor: float,
+) -> float:
+    noise = max(
+        abs(float(neutral_summary.get("p05") or 0.0)),
+        abs(float(neutral_summary.get("p95") or 0.0)),
+        abs(float(neutral_summary.get("sd") or 0.0)),
+    )
+    separation = abs(float(positive_score) - float(negative_score))
+    candidate = max(
+        noise * float(noise_multiplier),
+        separation * float(action_range_ratio),
+        float(absolute_floor),
+    )
+    cap = separation * 0.45 if separation > 0.0 else candidate
+    return min(candidate, cap)
 
 
 def mean_quaternion(

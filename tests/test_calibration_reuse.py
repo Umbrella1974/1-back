@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from pinch_calibration import PinchCalibrationConfig, calibrate_from_samples
+from pinch_calibration import (
+    PinchCalibrationConfig,
+    calibrate_from_repetition_samples,
+    calibrate_from_samples,
+)
 from run_pinch_haptic_1back import (
     CalibrationReuseConfig,
     _calibration_reuse_config_from_dict,
@@ -156,13 +160,20 @@ def test_calibration_reuse_config_reads_open_distance_tolerance_fields(tmp_path)
     assert config.open_distance_min_tolerance == pytest.approx(0.006)
 
 
-def test_calibration_reuse_allows_good_reference_quality() -> None:
-    assert _calibration_reuse_block_reason(_calibration()) == ""
+def test_calibration_reuse_blocks_legacy_calibration_for_new_protocol() -> None:
+    assert (
+        _calibration_reuse_block_reason(_calibration())
+        == "legacy_calibration_requires_new_full_calibration"
+    )
+
+
+def test_calibration_reuse_allows_good_v2_reference_quality() -> None:
+    assert _calibration_reuse_block_reason(_v2_calibration()) == ""
 
 
 def test_calibration_reuse_blocks_bad_reference_quality() -> None:
     calibration = replace(
-        _calibration(),
+        _v2_calibration(),
         pinch_reference_quality_passed=False,
         pinch_reference_quality_reason="reference_overlap",
     )
@@ -174,7 +185,7 @@ def test_calibration_reuse_blocks_bad_reference_quality() -> None:
 
 def test_calibration_reuse_blocks_failed_calibration() -> None:
     calibration = replace(
-        _calibration(),
+        _v2_calibration(),
         calibration_passed=False,
         calibration_failure_reason="not_enough_valid_frames",
     )
@@ -214,6 +225,40 @@ def _low_mad_calibration():
         [_sample(0.0999), _sample(0.1000), _sample(0.1001)],
         [_sample(0.019), _sample(0.020), _sample(0.021)],
         contact_samples=[_sample(0.059), _sample(0.060), _sample(0.061)],
+        config=config,
+    )
+
+
+def _v2_calibration():
+    config = PinchCalibrationConfig(
+        open_hand_duration_s=1.0,
+        contact_hand_duration_s=1.0,
+        pinch_hand_duration_s=1.0,
+        stable_recording_duration_s=1.0,
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+    return calibrate_from_repetition_samples(
+        {
+            "open": [
+                [_sample(0.099), _sample(0.100), _sample(0.101)],
+                [_sample(0.100), _sample(0.101), _sample(0.102)],
+                [_sample(0.098), _sample(0.099), _sample(0.100)],
+            ],
+            "contact": [
+                [_sample(0.059), _sample(0.060), _sample(0.061)],
+                [_sample(0.060), _sample(0.061), _sample(0.062)],
+                [_sample(0.058), _sample(0.059), _sample(0.060)],
+            ],
+            "pinch": [
+                [_sample(0.019), _sample(0.020), _sample(0.021)],
+                [_sample(0.020), _sample(0.021), _sample(0.022)],
+                [_sample(0.018), _sample(0.019), _sample(0.020)],
+            ],
+        },
         config=config,
     )
 

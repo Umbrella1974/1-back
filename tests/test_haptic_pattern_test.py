@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from test_haptic_patterns import (
+    _play_test_event,
+    _test_sender_config,
     build_test_trials,
     make_result_row,
     parse_answer,
@@ -8,6 +12,7 @@ from test_haptic_patterns import (
 )
 
 from learn_haptic_patterns import load_learning_session
+from simple_haptic_sender import SimpleHapticSender
 
 
 def test_build_test_trials_repeats_each_cue_three_times() -> None:
@@ -58,6 +63,28 @@ def test_make_result_row_scores_correctness() -> None:
     assert row["is_correct"] is False
     assert row["replay_count"] == 1
     assert row["random_seed"] == 123
+
+
+def test_play_test_event_does_not_reveal_cue(capsys) -> None:
+    session = load_learning_session("only-motor.yaml", mode_name="only-motor")
+    config = replace(
+        _test_sender_config(session),
+        disabled_mode=True,
+        vibration_tcp_enabled=False,
+        matrix_tcp_enabled=False,
+    )
+    sender = SimpleHapticSender(
+        config,
+        session_id="test-session",
+    )
+    capsys.readouterr()
+
+    _play_test_event(sender, session.events[0])
+
+    output = capsys.readouterr().out
+    assert "Playing cue" not in output
+    assert session.events[0].name not in output
+    assert "[HAPTIC]" not in output
 
 
 def test_print_test_summary_flags_all_wrong_cue(capsys) -> None:

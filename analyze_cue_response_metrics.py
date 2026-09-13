@@ -1903,12 +1903,13 @@ def _semantic_haptic_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def _is_analyzable_session(summary: dict[str, Any], semantic_haptics: list[dict[str, str]]) -> bool:
-    plan_id = _text(summary.get("haptic_plan_id"))
+    plan_id = _analysis_plan_id(summary)
     return (
         (
             plan_id.startswith("dual-")
             or plan_id.startswith("only-matrix-")
             or plan_id.startswith("only-motor-")
+            or plan_id.startswith("visual-action-")
         )
         and len(semantic_haptics) >= 7
     )
@@ -1932,13 +1933,14 @@ def _base_row(
     next_onset_ms: float | None,
     summary: dict[str, Any],
 ) -> dict[str, Any]:
+    plan_id = _analysis_plan_id(summary)
     return {
         "session_id": summary.get("session_id", cue.get("session_id", "")),
         "participant_id": summary.get("participant_id", ""),
-        "condition": _condition_from_plan(_text(summary.get("haptic_plan_id"))),
+        "condition": _condition_from_plan(plan_id),
         "task_type": _text(summary.get("task_type")) or "dual",
         "nback_enabled": summary.get("nback_enabled", True),
-        "plan_id": summary.get("haptic_plan_id", ""),
+        "plan_id": plan_id,
         "event_name": _text(cue.get("event_name")).lower(),
         "event_position": event_position,
         "emit_trial_number": cue.get("emit_trial_number", ""),
@@ -1947,7 +1949,13 @@ def _base_row(
     }
 
 
+def _analysis_plan_id(summary: dict[str, Any]) -> str:
+    return _text(summary.get("visual_cue_plan_id") or summary.get("haptic_plan_id"))
+
+
 def _condition_from_plan(plan_id: str) -> str:
+    if plan_id.startswith("visual-action-"):
+        return "visual-action"
     if plan_id.startswith("dual-"):
         return "dual"
     if plan_id.startswith("only-matrix-"):

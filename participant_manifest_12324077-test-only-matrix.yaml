@@ -1,0 +1,66 @@
+participant_id: 12324077
+run_id: 12324077_exp2_001
+run_seed: null
+output_root: outputs
+
+calibration:
+  path: calibrations/12324077_exp2_cal_v01.json
+  reuse: true
+  quick_check: true
+
+sessions:
+  - session_label: matrix_single_plan0
+    order: 1
+    task_type: single
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-0.yaml
+    plan_id: only-matrix-0
+
+  - session_label: matrix_dual_plan1
+    order: 2
+    task_type: dual
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-1.yaml
+    plan_id: only-matrix-1
+
+  - session_label: matrix_dual_plan2
+    order: 3
+    task_type: dual
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-2.yaml
+    plan_id: only-matrix-2
+
+  - session_label: matrix_dual_plan3
+    order: 4
+    task_type: dual
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-3.yaml
+    plan_id: only-matrix-3
+
+  - session_label: matrix_dual_plan4
+    order: 5
+    task_type: dual
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-4.yaml
+    plan_id: only-matrix-4
+
+  - session_label: matrix_dual_plan5
+    order: 6
+    task_type: dual
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-5.yaml
+    plan_id: only-matrix-5
+
+  - session_label: matrix_dual_plan6
+    order: 7
+    task_type: dual
+    feedback_type: matrix_only
+    config: only-matrix.yaml
+    haptic_plan_config: haptic-plan-only-matrix-6.yaml
+    plan_id: only-matrix-6

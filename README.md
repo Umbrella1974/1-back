@@ -84,6 +84,33 @@ python run_pinch_haptic_1back.py --config only-matrix.yaml
 
 `single` 模式会保留 MANUS、pinch/wrist calibration、haptic plan、haptic TCP、neutral gate 和所有触觉日志，但不会启动 1-back pygame 窗口，也不会记录 1-back response。`nback_events.csv` 仍会写 header-only 空文件，方便后续批量分析。
 
+### Visual hand action test
+
+如果只想在屏幕上随机显示语义 cue，让受试者做对应手部动作，并在结束后自动分析动作是否对应，运行：
+
+```powershell
+python run_visual_hand_action_test.py --config visual_hand_action_test.yaml
+```
+
+这个入口不会连接或发送 motor/matrix 触觉 TCP，也不读取 haptic plan。它只把屏幕 cue 的 onset 写入事件表，并持续记录 MANUS pinch / wrist 数据。程序结束后默认调用 `analyze_cue_response_metrics.py`，输出到 `analysis_outputs/<session_id>/`。
+
+可选配置：
+
+```yaml
+visual_action_test:
+  cue_plan_id: visual-action-1
+  events: [contact, slip, up, right, left, down, release]
+  repetitions_per_event: 3
+  cue_duration_ms: 1000
+  fixation_ms: 500
+  inter_cue_interval_ms: [3000, 5000]
+  random_seed: 12345
+  run_analysis: true
+  analysis_output_root: analysis_outputs
+```
+
+正式 cue 阶段受试者只需要按一次 Enter 开始；如果当前 config 没有可复用的 calibration，程序仍会先要求实验者完成 pinch / wrist calibration，因为离线评分需要这些参考值。
+
 ### Cue dispatch mode
 
 `task_type` 决定是否有 1-back；`cue_dispatch_mode` 决定 haptic cue 怎么被触发。两者是不同概念。

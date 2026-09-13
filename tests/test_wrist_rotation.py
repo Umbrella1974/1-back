@@ -202,12 +202,18 @@ def test_wrist_logger_writes_calibration_json(tmp_path) -> None:
 
 def test_wrist_rotation_config_parses_required_flag() -> None:
     config = wrist_rotation_config_from_dict(
-        {"enabled": True, "required": True, "enable_up_down": True}
+        {
+            "enabled": True,
+            "required": True,
+            "enable_up_down": True,
+            "neutral_stability_angle_max_deg": 5.5,
+        }
     )
 
     assert config.enabled is True
     assert config.required is True
     assert config.enable_up_down is True
+    assert config.neutral_stability_angle_max_deg == pytest.approx(5.5)
 
 
 def test_wrist_logger_counts_valid_and_invalid_samples(tmp_path) -> None:

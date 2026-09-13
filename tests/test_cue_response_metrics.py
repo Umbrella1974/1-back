@@ -143,6 +143,45 @@ def test_unified_analysis_includes_only_motor_plans(tmp_path) -> None:
     assert summary["cue_count"] == 7
 
 
+def test_unified_analysis_includes_visual_action_plan_id(tmp_path) -> None:
+    session = tmp_path / "visual_action_session"
+    session.mkdir()
+    _write_json(
+        session / "summary.json",
+        {
+            "session_id": "visual_action_session",
+            "participant_id": "p01",
+            "visual_cue_plan_id": "visual-action-1",
+            "task_type": "visual_action_test",
+            "nback_enabled": False,
+        },
+    )
+    _write_csv(
+        session / "haptic_events.csv",
+        [
+            _haptic("contact", 500, 1),
+            _haptic("slip", 3000, 2),
+            _haptic("left", 5000, 3),
+            _haptic("right", 7000, 4),
+            _haptic("up", 9000, 5),
+            _haptic("down", 11000, 6),
+            _haptic("release", 13000, 7),
+        ],
+    )
+
+    metrics_path, _, _, summary_path = analyze_root(
+        tmp_path,
+        output_dir=tmp_path / "analysis",
+    )
+
+    metrics = _read_csv(metrics_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert len(metrics) == 7
+    assert {row["condition"] for row in metrics} == {"visual-action"}
+    assert {row["plan_id"] for row in metrics} == {"visual-action-1"}
+    assert summary["cue_count"] == 7
+
+
 def test_recoverable_wrist_trial_uses_correct_response_rt_not_preexisting_zero(tmp_path) -> None:
     session = tmp_path / "pinch_haptic_1back_recoverable"
     session.mkdir()

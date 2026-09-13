@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from statistics import median
 from typing import Any, Iterable
 
@@ -19,6 +19,21 @@ class PinchCalibrationConfig:
     min_valid_frames: int = 30
     min_distance_range: float = 0.02
     min_distance_range_ratio: float = 0.15
+    repetition_count: int = 3
+    stability_window_s: float = 0.5
+    stability_dwell_s: float = 0.4
+    stable_recording_duration_s: float = 1.5
+    quick_check_recording_duration_s: float = 0.75
+    stability_valid_ratio_min: float = 0.8
+    stability_mad_max: float | None = 0.004
+    stability_range_max: float | None = 0.015
+    stability_timeout_s: float = 8.0
+    max_acquisition_attempts: int = 3
+    min_state_gap_ratio: float = 0.10
+    max_contact_rep_position_range: float = 0.25
+    max_state_rep_median_range_ratio: float = 0.20
+    contact_position_min: float | None = None
+    contact_position_max: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -43,6 +58,54 @@ class PinchCalibrationConfig:
         if isinstance(self.min_valid_frames, bool) or int(self.min_valid_frames) <= 0:
             raise ValueError("min_valid_frames must be a positive integer.")
         object.__setattr__(self, "min_valid_frames", int(self.min_valid_frames))
+        if isinstance(self.repetition_count, bool) or int(self.repetition_count) <= 0:
+            raise ValueError("repetition_count must be a positive integer.")
+        object.__setattr__(self, "repetition_count", int(self.repetition_count))
+        for name in (
+            "stability_window_s",
+            "stability_dwell_s",
+            "stable_recording_duration_s",
+            "quick_check_recording_duration_s",
+            "stability_timeout_s",
+        ):
+            object.__setattr__(self, name, _positive_float(getattr(self, name), name))
+        if (
+            isinstance(self.max_acquisition_attempts, bool)
+            or int(self.max_acquisition_attempts) <= 0
+        ):
+            raise ValueError("max_acquisition_attempts must be a positive integer.")
+        object.__setattr__(
+            self,
+            "max_acquisition_attempts",
+            int(self.max_acquisition_attempts),
+        )
+        for name in (
+            "stability_valid_ratio_min",
+            "min_state_gap_ratio",
+            "max_contact_rep_position_range",
+            "max_state_rep_median_range_ratio",
+        ):
+            value = _finite_float(getattr(self, name), name)
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"{name} must be between 0 and 1.")
+            object.__setattr__(self, name, value)
+        for name in ("stability_mad_max", "stability_range_max"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _non_negative_float(value, name))
+        for name in ("contact_position_min", "contact_position_max"):
+            value = getattr(self, name)
+            if value is not None:
+                value = _finite_float(value, name)
+                if value < 0.0 or value > 1.0:
+                    raise ValueError(f"{name} must be between 0 and 1.")
+                object.__setattr__(self, name, value)
+        if (
+            self.contact_position_min is not None
+            and self.contact_position_max is not None
+            and self.contact_position_min > self.contact_position_max
+        ):
+            raise ValueError("contact_position_min must be <= contact_position_max.")
         object.__setattr__(
             self,
             "min_distance_range",
@@ -96,6 +159,24 @@ class PinchCalibrationResult:
     distance_range_ratio: float | None = None
     calibration_passed: bool = True
     calibration_failure_reason: str = ""
+    calibration_schema_version: int = 1
+    acquisition_protocol: str = "legacy_static_hold_v1"
+    finger_repetition_count: int = 1
+    finger_repetitions: tuple[dict[str, Any], ...] = ()
+    finger_state_summaries: dict[str, dict[str, Any]] | None = None
+    open_contact_gap: float | None = None
+    contact_pinch_gap: float | None = None
+    open_contact_gap_ratio: float | None = None
+    contact_pinch_gap_ratio: float | None = None
+    normalized_contact_position: float | None = None
+    contact_rep_normalized_positions: tuple[float, ...] = ()
+    contact_rep_position_range: float | None = None
+    contact_rep_position_mad: float | None = None
+    open_rep_median_range_ratio: float | None = None
+    contact_rep_median_range_ratio: float | None = None
+    pinch_rep_median_range_ratio: float | None = None
+    full_calibration_qc_passed: bool | None = None
+    full_calibration_qc_reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         distance_range = float(self.max_distance) - float(self.min_distance)
@@ -151,6 +232,84 @@ def calibrate_from_samples(
         config=config,
         thumb_node_id=thumb_node_id,
         target_finger_node_id=target_finger_node_id,
+    )
+
+
+def calibrate_from_repetition_samples(
+    repetitions: dict[str, Iterable[Iterable[Any]]],
+    *,
+    config: PinchCalibrationConfig | None = None,
+    thumb_node_id: int = 4,
+    target_finger_node_id: int = 14,
+) -> PinchCalibrationResult:
+    """Compute calibration from staged Open/C/Pinch repetition samples."""
+
+    return calibrate_from_repetition_distances(
+        {
+            state: [_valid_distances(samples) for samples in state_repetitions]
+            for state, state_repetitions in repetitions.items()
+        },
+        config=config,
+        thumb_node_id=thumb_node_id,
+        target_finger_node_id=target_finger_node_id,
+    )
+
+
+def calibrate_from_repetition_distances(
+    repetitions: dict[str, Iterable[Iterable[float]]],
+    *,
+    config: PinchCalibrationConfig | None = None,
+    thumb_node_id: int = 4,
+    target_finger_node_id: int = 14,
+) -> PinchCalibrationResult:
+    """Compute calibration and repetition consistency QC from staged distances."""
+
+    cfg = config or PinchCalibrationConfig()
+    normalized = _normalize_repetition_distances(repetitions, cfg)
+    open_reps = normalized["open"]
+    contact_reps = normalized["contact"]
+    pinch_reps = normalized["pinch"]
+    result = calibrate_from_distances(
+        _flatten(open_reps),
+        _flatten(pinch_reps),
+        contact_distances=_flatten(contact_reps),
+        config=cfg,
+        thumb_node_id=thumb_node_id,
+        target_finger_node_id=target_finger_node_id,
+    )
+    repetition_fields = _finger_repetition_fields(
+        open_reps,
+        contact_reps,
+        pinch_reps,
+        config=cfg,
+    )
+    reasons = list(repetition_fields["full_calibration_qc_reasons"])
+    if not result.calibration_passed and result.calibration_failure_reason:
+        reasons.append(result.calibration_failure_reason)
+    if result.pinch_reference_quality_passed is False and result.pinch_reference_quality_reason:
+        reasons.append(result.pinch_reference_quality_reason)
+    return replace(
+        result,
+        calibration_schema_version=2,
+        acquisition_protocol="staged_repetition_v1",
+        finger_repetition_count=len(open_reps),
+        finger_repetitions=tuple(repetition_fields["finger_repetitions"]),
+        finger_state_summaries=repetition_fields["finger_state_summaries"],
+        open_contact_gap=repetition_fields["open_contact_gap"],
+        contact_pinch_gap=repetition_fields["contact_pinch_gap"],
+        open_contact_gap_ratio=repetition_fields["open_contact_gap_ratio"],
+        contact_pinch_gap_ratio=repetition_fields["contact_pinch_gap_ratio"],
+        normalized_contact_position=repetition_fields["normalized_contact_position"],
+        contact_rep_normalized_positions=tuple(
+            repetition_fields["contact_rep_normalized_positions"]
+        ),
+        contact_rep_position_range=repetition_fields["contact_rep_position_range"],
+        contact_rep_position_mad=repetition_fields["contact_rep_position_mad"],
+        open_rep_median_range_ratio=repetition_fields["open_rep_median_range_ratio"],
+        contact_rep_median_range_ratio=repetition_fields["contact_rep_median_range_ratio"],
+        pinch_rep_median_range_ratio=repetition_fields["pinch_rep_median_range_ratio"],
+        full_calibration_qc_passed=not reasons,
+        full_calibration_qc_reasons=tuple(dict.fromkeys(reasons)),
     )
 
 
@@ -317,6 +476,185 @@ def _pinch_reference_quality(
         "open_contact_boundary": open_contact_boundary,
         "contact_pinch_boundary": contact_pinch_boundary,
     }
+
+
+def _normalize_repetition_distances(
+    repetitions: dict[str, Iterable[Iterable[float]]],
+    config: PinchCalibrationConfig,
+) -> dict[str, list[list[float]]]:
+    result: dict[str, list[list[float]]] = {}
+    for state in ("open", "contact", "pinch"):
+        state_reps = list(repetitions.get(state, ()))
+        if len(state_reps) < int(config.repetition_count):
+            raise ValueError(f"{state} repetition count is less than {config.repetition_count}.")
+        parsed: list[list[float]] = []
+        for index, rep in enumerate(state_reps[: int(config.repetition_count)], start=1):
+            values = [_positive_float(value, f"{state}_rep{index}_distance") for value in rep]
+            if len(values) < config.min_valid_frames:
+                raise ValueError(
+                    f"{state} rep {index} valid frame count {len(values)} is less than "
+                    f"min_valid_frames {config.min_valid_frames}."
+                )
+            parsed.append(values)
+        result[state] = parsed
+    return result
+
+
+def _finger_repetition_fields(
+    open_reps: list[list[float]],
+    contact_reps: list[list[float]],
+    pinch_reps: list[list[float]],
+    *,
+    config: PinchCalibrationConfig,
+) -> dict[str, Any]:
+    reps_by_state = {
+        "open": open_reps,
+        "contact": contact_reps,
+        "pinch": pinch_reps,
+    }
+    state_summaries: dict[str, dict[str, Any]] = {}
+    repetition_rows: list[dict[str, Any]] = []
+    for state, state_reps in reps_by_state.items():
+        medians: list[float] = []
+        for index, values in enumerate(state_reps, start=1):
+            summary = _distribution_summary(values)
+            medians.append(summary["median"])
+            row = {
+                "requested_state": state,
+                "repetition_index": index,
+                "phase": f"{state}_rep{index}",
+                "valid_count": len(values),
+                "acquisition_duration_s": _state_duration_s(state, config),
+                **summary,
+            }
+            row["range"] = summary["p90"] - summary["p10"]
+            repetition_rows.append(row)
+        state_summaries[state] = {
+            "repetition_count": len(state_reps),
+            "pooled": _distribution_summary(_flatten(state_reps)),
+            "rep_medians": tuple(medians),
+            "rep_median_range": max(medians) - min(medians) if medians else None,
+            "rep_median_mad": _mad(medians) if medians else None,
+        }
+
+    open_median = state_summaries["open"]["pooled"]["median"]
+    contact_median = state_summaries["contact"]["pooled"]["median"]
+    pinch_median = state_summaries["pinch"]["pooled"]["median"]
+    open_pinch_range = open_median - pinch_median
+    open_contact_gap = open_median - contact_median
+    contact_pinch_gap = contact_median - pinch_median
+    open_contact_gap_ratio = _safe_ratio(open_contact_gap, open_pinch_range)
+    contact_pinch_gap_ratio = _safe_ratio(contact_pinch_gap, open_pinch_range)
+    normalized_contact = _safe_ratio(open_contact_gap, open_pinch_range)
+    paired_count = min(len(open_reps), len(contact_reps), len(pinch_reps))
+    contact_positions: list[float] = []
+    for index in range(paired_count):
+        open_rep_median = _distribution_summary(open_reps[index])["median"]
+        contact_rep_median = _distribution_summary(contact_reps[index])["median"]
+        pinch_rep_median = _distribution_summary(pinch_reps[index])["median"]
+        position = _safe_ratio(
+            open_rep_median - contact_rep_median,
+            open_rep_median - pinch_rep_median,
+        )
+        if position is not None and math.isfinite(position):
+            contact_positions.append(position)
+
+    reasons: list[str] = []
+    if not (open_median > contact_median > pinch_median):
+        reasons.append("reference_order_not_open_contact_pinch")
+    if (
+        open_contact_gap_ratio is None
+        or open_contact_gap_ratio < config.min_state_gap_ratio
+    ):
+        reasons.append("open_contact_gap_too_small")
+    if (
+        contact_pinch_gap_ratio is None
+        or contact_pinch_gap_ratio < config.min_state_gap_ratio
+    ):
+        reasons.append("contact_pinch_gap_too_small")
+    if (
+        normalized_contact is not None
+        and config.contact_position_min is not None
+        and normalized_contact < config.contact_position_min
+    ):
+        reasons.append("contact_position_too_close_to_open")
+    if (
+        normalized_contact is not None
+        and config.contact_position_max is not None
+        and normalized_contact > config.contact_position_max
+    ):
+        reasons.append("contact_position_too_close_to_pinch")
+
+    contact_range = max(contact_positions) - min(contact_positions) if contact_positions else None
+    if contact_range is None:
+        reasons.append("contact_rep_position_unavailable")
+    elif contact_range > config.max_contact_rep_position_range:
+        reasons.append("contact_rep_position_inconsistent")
+
+    rep_ratio_fields: dict[str, float | None] = {}
+    for state in ("open", "contact", "pinch"):
+        rep_range = state_summaries[state]["rep_median_range"]
+        ratio = _safe_ratio(rep_range, open_pinch_range)
+        rep_ratio_fields[f"{state}_rep_median_range_ratio"] = ratio
+        if ratio is None or ratio > config.max_state_rep_median_range_ratio:
+            reasons.append(f"{state}_rep_median_inconsistent")
+
+    for row in repetition_rows:
+        mad_ratio = _safe_ratio(row["mad"], open_pinch_range)
+        range_ratio = _safe_ratio(row["range"], open_pinch_range)
+        if config.stability_mad_max is not None and row["mad"] > config.stability_mad_max:
+            reasons.append(f"{row['phase']}_within_hold_mad_too_large")
+        if config.stability_range_max is not None and row["range"] > config.stability_range_max:
+            reasons.append(f"{row['phase']}_within_hold_range_too_large")
+        row["mad_ratio_to_open_pinch_range"] = mad_ratio
+        row["range_ratio_to_open_pinch_range"] = range_ratio
+
+    return {
+        "finger_repetitions": repetition_rows,
+        "finger_state_summaries": state_summaries,
+        "open_contact_gap": open_contact_gap,
+        "contact_pinch_gap": contact_pinch_gap,
+        "open_contact_gap_ratio": open_contact_gap_ratio,
+        "contact_pinch_gap_ratio": contact_pinch_gap_ratio,
+        "normalized_contact_position": normalized_contact,
+        "contact_rep_normalized_positions": tuple(contact_positions),
+        "contact_rep_position_range": contact_range,
+        "contact_rep_position_mad": _mad(contact_positions) if contact_positions else None,
+        "full_calibration_qc_reasons": tuple(dict.fromkeys(reasons)),
+        **rep_ratio_fields,
+    }
+
+
+def _flatten(values: Iterable[Iterable[float]]) -> list[float]:
+    return [item for group in values for item in group]
+
+
+def _mad(values: Iterable[float]) -> float | None:
+    items = [float(item) for item in values if math.isfinite(float(item))]
+    if not items:
+        return None
+    center = median(items)
+    return median([abs(item - center) for item in items])
+
+
+def _safe_ratio(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator is None:
+        return None
+    denominator = float(denominator)
+    if not math.isfinite(denominator) or abs(denominator) <= 1e-12:
+        return None
+    value = float(numerator) / denominator
+    return value if math.isfinite(value) else None
+
+
+def _state_duration_s(state: str, config: PinchCalibrationConfig) -> float:
+    if state == "open":
+        return config.open_hand_duration_s
+    if state == "contact":
+        return config.contact_hand_duration_s
+    if state == "pinch":
+        return config.pinch_hand_duration_s
+    return config.stable_recording_duration_s
 
 
 def _percentile(ordered_values: list[float], fraction: float) -> float:

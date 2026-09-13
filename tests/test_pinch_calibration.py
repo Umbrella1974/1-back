@@ -8,6 +8,7 @@ from pinch_calibration import (
     PinchCalibrationConfig,
     calculate_threshold_a,
     calibrate_from_samples,
+    calibrate_from_repetition_samples,
     classify_pinch_zone,
     is_in_closed_zone,
     is_in_open_zone,
@@ -99,6 +100,44 @@ def test_calibration_marks_bad_contact_reference_order() -> None:
 
     assert result.pinch_reference_quality_passed is False
     assert result.pinch_reference_quality_reason == "reference_order_not_open_contact_pinch"
+
+
+def test_repetition_calibration_records_normalized_contact_consistency() -> None:
+    config = PinchCalibrationConfig(
+        min_valid_frames=3,
+        min_distance_range=0.0,
+        min_distance_range_ratio=0.0,
+        stable_recording_duration_s=1.0,
+        stability_mad_max=None,
+        stability_range_max=None,
+    )
+
+    result = calibrate_from_repetition_samples(
+        {
+            "open": [
+                [_sample(0.100), _sample(0.101), _sample(0.099)],
+                [_sample(0.100), _sample(0.101), _sample(0.099)],
+                [_sample(0.100), _sample(0.101), _sample(0.099)],
+            ],
+            "contact": [
+                [_sample(0.060), _sample(0.061), _sample(0.059)],
+                [_sample(0.055), _sample(0.056), _sample(0.054)],
+                [_sample(0.058), _sample(0.059), _sample(0.057)],
+            ],
+            "pinch": [
+                [_sample(0.020), _sample(0.021), _sample(0.019)],
+                [_sample(0.020), _sample(0.021), _sample(0.019)],
+                [_sample(0.020), _sample(0.021), _sample(0.019)],
+            ],
+        },
+        config=config,
+    )
+
+    assert result.calibration_schema_version == 2
+    assert result.finger_repetition_count == 3
+    assert result.normalized_contact_position == pytest.approx(0.525)
+    assert result.contact_rep_position_range == pytest.approx(0.0625)
+    assert result.full_calibration_qc_passed is True
 
 
 def test_calibration_requires_min_valid_frames() -> None:

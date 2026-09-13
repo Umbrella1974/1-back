@@ -1,0 +1,66 @@
+participant_id: 12324077
+run_id: 12324077_exp2_001
+run_seed: null
+output_root: outputs
+
+calibration:
+  path: calibrations/12324077_exp2_cal_v01.json
+  reuse: true
+  quick_check: true
+
+sessions:
+  - session_label: dual_plan0
+    order: 1
+    task_type: single
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_dual-0.yaml
+    plan_id: dual-0
+
+  - session_label: dual_plan1
+    order: 2
+    task_type: dual
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_dual-1.yaml
+    plan_id: dual-1
+
+  - session_label: dual_plan2
+    order: 3
+    task_type: dual
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_dual-2.yaml
+    plan_id: dual-2
+
+  - session_label: dual_plan3
+    order: 4
+    task_type: dual
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_dual-3.yaml
+    plan_id: dual-3
+
+  - session_label: dual_plan4
+    order: 5
+    task_type: dual
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_dual-4.yaml
+    plan_id: dual-4
+
+  - session_label: dual_plan5
+    order: 6
+    task_type: dual
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_dual-5.yaml
+    plan_id: dual-5
+
+  - session_label: dual_plan6
+    order: 7
+    task_type: dual
+    feedback_type: combined
+    config: dualtask_config.yaml
+    haptic_plan_config: haptic_plan_dual-6.yaml
+    plan_id: dual-6

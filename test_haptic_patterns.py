@@ -6,7 +6,7 @@ import argparse
 import csv
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,6 @@ from learn_haptic_patterns import (
     EVENT_LABELS,
     MODE_CONFIGS,
     LearningSession,
-    _event_menu_label,
     load_learning_session,
     play_event_once_for_test,
 )
@@ -114,7 +113,7 @@ def run_haptic_test(
     print("Answer options:")
     _print_answer_options(session.events)
 
-    sender = SimpleHapticSender(session.sender_config, session_id=session_id)
+    sender = SimpleHapticSender(_test_sender_config(session), session_id=session_id)
     result_rows: list[dict[str, Any]] = []
     try:
         for trial in trials:
@@ -272,10 +271,13 @@ def _run_test_trial(
 
 
 def _play_test_event(sender: SimpleHapticSender, event: HapticPlanEvent) -> float:
-    print(f"Playing cue: {_event_menu_label(event)}")
     start_time = time.perf_counter()
     play_event_once_for_test(sender, event)
     return start_time
+
+
+def _test_sender_config(session: LearningSession) -> Any:
+    return replace(session.sender_config, console_logging_enabled=False)
 
 
 def parse_answer(
